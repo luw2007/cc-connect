@@ -526,7 +526,7 @@ func scanSessionMeta(path string) (string, int) {
 		var entry struct {
 			Type    string `json:"type"`
 			Message struct {
-				Content string `json:"content"`
+				Content json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
@@ -534,8 +534,8 @@ func scanSessionMeta(path string) (string, int) {
 		}
 		if entry.Type == "user" || entry.Type == "assistant" {
 			count++
-			if entry.Type == "user" && entry.Message.Content != "" {
-				summary = entry.Message.Content
+			if entry.Type == "user" && len(entry.Message.Content) > 0 {
+				summary = extractContentString(entry.Message.Content)
 			}
 		}
 	}
@@ -545,6 +545,31 @@ func scanSessionMeta(path string) (string, int) {
 		summary = string([]rune(summary)[:40]) + "..."
 	}
 	return summary, count
+}
+
+// extractContentString extracts a text summary from Claude Code content field.
+// Content can be either a string or an array of content blocks.
+func extractContentString(raw json.RawMessage) string {
+	// Try as plain string first
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return str
+	}
+
+	// Try as array of content blocks
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				return b.Text
+			}
+		}
+	}
+
+	return ""
 }
 
 var xmlTagRe = regexp.MustCompile(`<[^>]+>`)
