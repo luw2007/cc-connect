@@ -209,6 +209,7 @@ const (
 	MsgHelpSessionSection        MsgKey = "help_session_section"
 	MsgHelpAgentSection          MsgKey = "help_agent_section"
 	MsgHelpToolsSection          MsgKey = "help_tools_section"
+	MsgHelpInteractionSection    MsgKey = "help_interaction_section"
 	MsgHelpSystemSection         MsgKey = "help_system_section"
 	MsgHelpTip                   MsgKey = "help_tip"
 	MsgListTitle                 MsgKey = "list_title"
@@ -308,6 +309,9 @@ const (
 	MsgCompressing          MsgKey = "compressing"
 	MsgCompressNoSession    MsgKey = "compress_no_session"
 	MsgCompressDone         MsgKey = "compress_done"
+
+	MsgAutoContinuing      MsgKey = "auto_continuing"
+	MsgAutoContinueNotify  MsgKey = "auto_continue_notify"
 
 	MsgMemoryNotSupported MsgKey = "memory_not_supported"
 	MsgMemoryShowProject  MsgKey = "memory_show_project"
@@ -455,6 +459,23 @@ const (
 	MsgSessionAutoResetIdle   MsgKey = "session_auto_reset_idle"
 	MsgSessionClosingGraceful MsgKey = "session_closing_graceful"
 
+	MsgSessionStatusWaiting  MsgKey = "session_status_waiting"
+	MsgSessionStatusRunning  MsgKey = "session_status_running"
+	MsgSessionStatusDone     MsgKey = "session_status_done"
+	MsgSessionExportText     MsgKey = "session_export_text"
+	MsgSessionOpenTerminal   MsgKey = "session_open_terminal"
+	MsgSessionGetLink        MsgKey = "session_get_link"
+	MsgSessionClose          MsgKey = "session_close"
+	MsgSessionScreenshot     MsgKey = "session_screenshot"
+	MsgSessionTerminalURL    MsgKey = "session_terminal_url"
+	MsgCmdTerminal          MsgKey = "cmd_terminal"
+	MsgTerminalNoSession    MsgKey = "terminal_no_session"
+
+	MsgShortcutY   MsgKey = "y"
+	MsgShortcutN   MsgKey = "n"
+	MsgShortcutCC  MsgKey = "cc"
+	MsgShortcutEsc MsgKey = "esc"
+
 	MsgDeleteUsage              MsgKey = "delete_usage"
 	MsgDeleteSuccess            MsgKey = "delete_success"
 	MsgDeleteActiveDenied       MsgKey = "delete_active_denied"
@@ -554,11 +575,25 @@ const (
 	MsgBuiltinCmdDir       MsgKey = "dir"
 	MsgBuiltinCmdDiff      MsgKey = "diff"
 	MsgBuiltinCmdPs        MsgKey = "ps"
+	MsgBuiltinCmdClear     MsgKey = "clear"
+	MsgBuiltinCmdAttach    MsgKey = "attach"
+	MsgBuiltinCmdExport    MsgKey = "export"
+	MsgBuiltinCmdNotes     MsgKey = "notes"
+	MsgBuiltinCmdWeb       MsgKey = "web"
+	MsgBuiltinCmdWatch     MsgKey = "watch"
+	MsgBuiltinCmdMute      MsgKey = "mute"
+	MsgBuiltinCmdUnmute    MsgKey = "unmute"
+	MsgBuiltinCmdGroups    MsgKey = "groups"
+	MsgBuiltinCmdWhoami    MsgKey = "whoami"
+	MsgBuiltinCmdWorkspace MsgKey = "workspace"
+	MsgBuiltinCmdTerminal  MsgKey = "terminal"
+	MsgBuiltinCmdInfo      MsgKey = "info"
 
 	MsgDiffEmpty       MsgKey = "diff_empty"
 	MsgDiffNoDiff2HTML MsgKey = "diff_no_diff2html"
 
 	MsgDirChanged          MsgKey = "dir_changed"
+	MsgDirAdded            MsgKey = "dir_added"
 	MsgDirCurrent          MsgKey = "dir_current"
 	MsgDirReset            MsgKey = "dir_reset"
 	MsgDirUsage            MsgKey = "dir_usage"
@@ -572,8 +607,35 @@ const (
 	MsgDirCardTitle        MsgKey = "dir_card_title"
 	MsgDirCardPageHint     MsgKey = "dir_card_page_hint"
 	MsgDirCardEmptyHistory MsgKey = "dir_card_empty_history"
+	MsgDirCardHint         MsgKey = "dir_card_hint"
 	MsgDirCardReset        MsgKey = "dir_card_reset"
 	MsgDirCardPrev         MsgKey = "dir_card_prev"
+
+	// Group chat creation
+	MsgGroupCreateBtn MsgKey = "group_create_btn"
+	MsgGroupCreated   MsgKey = "group_created"
+
+	// Attach/Clear
+	MsgAttachUsage   MsgKey = "attach_usage"
+	MsgAttachSuccess MsgKey = "attach_success"
+	MsgClearSuccess  MsgKey = "clear_success"
+
+	// Mute/Unmute
+	MsgMuted   MsgKey = "muted"
+	MsgUnmuted MsgKey = "unmuted"
+
+	// Groups management
+	MsgGroupsTitle      MsgKey = "groups_title"
+	MsgGroupsEmpty      MsgKey = "groups_empty"
+	MsgGroupDissolved   MsgKey = "group_dissolved"
+	MsgGroupDissolveBtn MsgKey = "group_dissolve_btn"
+	MsgGroupDissolveErr MsgKey = "group_dissolve_err"
+
+	// Directory browser
+	MsgDirBrowserTitle  MsgKey = "dir_browser_title"
+	MsgDirBrowserSelect MsgKey = "dir_browser_select"
+	MsgDirBrowserUp     MsgKey = "dir_browser_up"
+
 	MsgShow                MsgKey = "show"
 	MsgShowUsage           MsgKey = "show_usage"
 	MsgShowParseError      MsgKey = "show_parse_error"
@@ -617,6 +679,48 @@ const (
 	MsgWsInitInvalidTarget      MsgKey = "ws_init_invalid_target"
 	MsgWsInitLocalPathsDisabled MsgKey = "ws_init_local_paths_disabled"
 	MsgBackgroundAutoDenied     MsgKey = "background_auto_denied"
+	MsgExportEmpty              MsgKey = "export_empty"
+	MsgNotesNotAvailable        MsgKey = "notes_not_available"
+	MsgNotesEmpty               MsgKey = "notes_empty"
+	MsgNotesListHeader          MsgKey = "notes_list_header"
+	MsgNotesTypeHeader          MsgKey = "notes_type_header"
+	MsgNotesSearchHeader        MsgKey = "notes_search_header"
+	MsgNotesSearchEmpty         MsgKey = "notes_search_empty"
+	MsgNotesSearchUsage         MsgKey = "notes_search_usage"
+	MsgNotesDeleteUsage         MsgKey = "notes_delete_usage"
+	MsgNotesDeleted             MsgKey = "notes_deleted"
+	MsgNotesNotFound            MsgKey = "notes_not_found"
+	MsgNotesClearDone           MsgKey = "notes_clear_done"
+	MsgNotesClearNoProject      MsgKey = "notes_clear_no_project"
+	MsgNotesError               MsgKey = "notes_error"
+	MsgNotesHelp                MsgKey = "notes_help"
+
+	MsgExtPermPrefix    MsgKey = "ext_perm_prefix"
+	MsgExtPermTimeout   MsgKey = "ext_perm_timeout"
+	MsgExtPermNoRoute   MsgKey = "ext_perm_no_route"
+	MsgExtNotifyPrefix  MsgKey = "ext_notify_prefix"
+
+	// Session info card
+	MsgHelpInfoSection       MsgKey = "help_info_section"
+	MsgInfoCardTitle         MsgKey = "info_card_title"
+	MsgInfoAgent             MsgKey = "info_agent"
+	MsgInfoWorkspace         MsgKey = "info_workspace"
+	MsgInfoDuration          MsgKey = "info_duration"
+	MsgInfoMessages          MsgKey = "info_messages"
+	MsgInfoSessionID         MsgKey = "info_session_id"
+	MsgInfoBtnScreenshot     MsgKey = "info_btn_screenshot"
+	MsgInfoBtnTerminal       MsgKey = "info_btn_terminal"
+	MsgInfoBtnFiles          MsgKey = "info_btn_files"
+	MsgInfoBtnCommands       MsgKey = "info_btn_commands"
+	MsgInfoBtnResources      MsgKey = "info_btn_resources"
+	MsgInfoNoSession         MsgKey = "info_no_session"
+	MsgInfoCommandsTitle     MsgKey = "info_commands_title"
+	MsgInfoCommandsEmpty     MsgKey = "info_commands_empty"
+	MsgInfoResourcesTitle    MsgKey = "info_resources_title"
+
+	// Cross-group /dir
+	MsgDirOtherGroups    MsgKey = "dir_other_groups"
+	MsgDirSwitchGroupBtn MsgKey = "dir_switch_group_btn"
 )
 
 var messages = map[MsgKey]map[Language]string{
@@ -770,6 +874,111 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "⚠️ 後台任務請求使用工具 `%s` 的權限，但已自動拒絕（目前無活躍會話）。請發送訊息或使用 `/yolo` 授權後續請求。",
 		LangJapanese:           "⚠️ バックグラウンドタスクがツール `%s` の権限を要求しましたが、自動的に拒否されました（アクティブなユーザーターンなし）。メッセージを送信するか `/yolo` を使用して今後のリクエストを承認してください。",
 		LangSpanish:            "⚠️ Una tarea en segundo plano solicitó permiso para `%s` pero se denegó automáticamente (sin turno de usuario activo). Envía un mensaje o usa `/yolo` para aprobar solicitudes futuras.",
+	},
+	MsgExportEmpty: {
+		LangEnglish:            "📭 No conversation history to export.",
+		LangChinese:            "📭 没有可导出的对话历史。",
+		LangTraditionalChinese: "📭 沒有可匯出的對話歷史。",
+		LangJapanese:           "📭 エクスポートする会話履歴がありません。",
+		LangSpanish:            "📭 No hay historial de conversación para exportar.",
+	},
+	MsgNotesNotAvailable: {
+		LangEnglish:            "Notes feature is not enabled. Add [notes] to your config.",
+		LangChinese:            "笔记功能未启用，请在配置中添加 [notes]。",
+		LangTraditionalChinese: "筆記功能未啟用，請在設定中新增 [notes]。",
+		LangJapanese:           "ノート機能が有効になっていません。設定に [notes] を追加してください。",
+		LangSpanish:            "La función de notas no está habilitada. Agrega [notes] a tu configuración.",
+	},
+	MsgNotesEmpty: {
+		LangEnglish:            "📭 No saved notes.",
+		LangChinese:            "📭 没有保存的笔记。",
+		LangTraditionalChinese: "📭 沒有儲存的筆記。",
+		LangJapanese:           "📭 保存されたノートはありません。",
+		LangSpanish:            "📭 No hay notas guardadas.",
+	},
+	MsgNotesListHeader: {
+		LangEnglish:            "📝 **Notes** (%d total)",
+		LangChinese:            "📝 **笔记** (共 %d 条)",
+		LangTraditionalChinese: "📝 **筆記** (共 %d 條)",
+		LangJapanese:           "📝 **ノート** (計 %d 件)",
+		LangSpanish:            "📝 **Notas** (%d en total)",
+	},
+	MsgNotesTypeHeader: {
+		LangEnglish:            "📝 **Notes [%s]** (%d total)",
+		LangChinese:            "📝 **笔记 [%s]** (共 %d 条)",
+		LangTraditionalChinese: "📝 **筆記 [%s]** (共 %d 條)",
+		LangJapanese:           "📝 **ノート [%s]** (計 %d 件)",
+		LangSpanish:            "📝 **Notas [%s]** (%d en total)",
+	},
+	MsgNotesSearchHeader: {
+		LangEnglish:            "🔍 **Search results for \"%s\"** (%d found)",
+		LangChinese:            "🔍 **搜索 \"%s\" 的结果** (找到 %d 条)",
+		LangTraditionalChinese: "🔍 **搜尋 \"%s\" 的結果** (找到 %d 條)",
+		LangJapanese:           "🔍 **\"%s\" の検索結果** (%d 件見つかりました)",
+		LangSpanish:            "🔍 **Resultados de búsqueda para \"%s\"** (%d encontrados)",
+	},
+	MsgNotesSearchEmpty: {
+		LangEnglish:            "🔍 No notes matching \"%s\".",
+		LangChinese:            "🔍 没有匹配 \"%s\" 的笔记。",
+		LangTraditionalChinese: "🔍 沒有匹配 \"%s\" 的筆記。",
+		LangJapanese:           "🔍 \"%s\" に一致するノートはありません。",
+		LangSpanish:            "🔍 No hay notas que coincidan con \"%s\".",
+	},
+	MsgNotesSearchUsage: {
+		LangEnglish:            "Usage: /notes search <keyword>",
+		LangChinese:            "用法：/notes search <关键词>",
+		LangTraditionalChinese: "用法：/notes search <關鍵詞>",
+		LangJapanese:           "使い方: /notes search <キーワード>",
+		LangSpanish:            "Uso: /notes search <palabra clave>",
+	},
+	MsgNotesDeleteUsage: {
+		LangEnglish:            "Usage: /notes delete <id>",
+		LangChinese:            "用法：/notes delete <id>",
+		LangTraditionalChinese: "用法：/notes delete <id>",
+		LangJapanese:           "使い方: /notes delete <id>",
+		LangSpanish:            "Uso: /notes delete <id>",
+	},
+	MsgNotesDeleted: {
+		LangEnglish:            "🗑️ Note deleted.",
+		LangChinese:            "🗑️ 笔记已删除。",
+		LangTraditionalChinese: "🗑️ 筆記已刪除。",
+		LangJapanese:           "🗑️ ノートを削除しました。",
+		LangSpanish:            "🗑️ Nota eliminada.",
+	},
+	MsgNotesNotFound: {
+		LangEnglish:            "⚠️ Note not found.",
+		LangChinese:            "⚠️ 未找到该笔记。",
+		LangTraditionalChinese: "⚠️ 找不到該筆記。",
+		LangJapanese:           "⚠️ ノートが見つかりません。",
+		LangSpanish:            "⚠️ Nota no encontrada.",
+	},
+	MsgNotesClearDone: {
+		LangEnglish:            "🗑️ All notes cleared.",
+		LangChinese:            "🗑️ 所有笔记已清除。",
+		LangTraditionalChinese: "🗑️ 所有筆記已清除。",
+		LangJapanese:           "🗑️ すべてのノートをクリアしました。",
+		LangSpanish:            "🗑️ Todas las notas han sido eliminadas.",
+	},
+	MsgNotesClearNoProject: {
+		LangEnglish:            "⚠️ Cannot determine project path.",
+		LangChinese:            "⚠️ 无法确定项目路径。",
+		LangTraditionalChinese: "⚠️ 無法確定專案路徑。",
+		LangJapanese:           "⚠️ プロジェクトパスを特定できません。",
+		LangSpanish:            "⚠️ No se puede determinar la ruta del proyecto.",
+	},
+	MsgNotesError: {
+		LangEnglish:            "⚠️ Error: %v",
+		LangChinese:            "⚠️ 错误：%v",
+		LangTraditionalChinese: "⚠️ 錯誤：%v",
+		LangJapanese:           "⚠️ エラー: %v",
+		LangSpanish:            "⚠️ Error: %v",
+	},
+	MsgNotesHelp: {
+		LangEnglish:            "📝 **/notes** — Manage extracted memories\n\n• `/notes` — list all\n• `/notes user` — user memories\n• `/notes project` — project memories\n• `/notes search <keyword>` — search\n• `/notes delete <id>` — delete one\n• `/notes clear` — clear all",
+		LangChinese:            "📝 **/notes** — 管理提取的笔记\n\n• `/notes` — 列出全部\n• `/notes user` — 用户笔记\n• `/notes project` — 项目笔记\n• `/notes search <关键词>` — 搜索\n• `/notes delete <id>` — 删除\n• `/notes clear` — 清空",
+		LangTraditionalChinese: "📝 **/notes** — 管理擷取的筆記\n\n• `/notes` — 列出全部\n• `/notes user` — 使用者筆記\n• `/notes project` — 專案筆記\n• `/notes search <關鍵詞>` — 搜尋\n• `/notes delete <id>` — 刪除\n• `/notes clear` — 清空",
+		LangJapanese:           "📝 **/notes** — 抽出されたノートを管理\n\n• `/notes` — 一覧\n• `/notes user` — ユーザーノート\n• `/notes project` — プロジェクトノート\n• `/notes search <キーワード>` — 検索\n• `/notes delete <id>` — 削除\n• `/notes clear` — クリア",
+		LangSpanish:            "📝 **/notes** — Gestionar memorias extraídas\n\n• `/notes` — listar todas\n• `/notes user` — memorias de usuario\n• `/notes project` — memorias de proyecto\n• `/notes search <palabra>` — buscar\n• `/notes delete <id>` — eliminar\n• `/notes clear` — limpiar todo",
 	},
 	MsgSessionNotFound: {
 		LangEnglish:            "⚠️ Session expired. Use /new to start a fresh conversation.",
@@ -1159,7 +1368,7 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "cc-connect Ayuda",
 	},
 	MsgHelpSessionSection: {
-		LangEnglish: "**Session Management**\n" +
+		LangEnglish: "**Session**\n" +
 			"/new [name] — Start a new session\n" +
 			"/list — List agent sessions\n" +
 			"/search <keyword> — Search sessions\n" +
@@ -1167,8 +1376,12 @@ var messages = map[MsgKey]map[Language]string{
 			"/delete <number>|1,2,3|3-7|1,3-5,8 — Delete session(s)\n" +
 			"/name [number] <text> — Name a session\n" +
 			"/current — Show active session\n" +
-			"/history [n] — Show last n messages",
-		LangChinese: "**会话管理**\n" +
+			"/history [n] — Show last n messages\n" +
+			"/clear — Clear session context\n" +
+			"/compress — Compress/compact context\n" +
+			"/attach — Attach to existing session\n" +
+			"/export — Export conversation",
+		LangChinese: "**会话**\n" +
 			"/new [名称] — 创建新会话\n" +
 			"/list — 列出会话列表\n" +
 			"/search <关键词> — 搜索会话\n" +
@@ -1176,8 +1389,12 @@ var messages = map[MsgKey]map[Language]string{
 			"/delete <序号>|1,2,3|3-7|1,3-5,8 — 删除会话\n" +
 			"/name [序号] <名称> — 命名会话\n" +
 			"/current — 查看当前会话\n" +
-			"/history [n] — 查看最近 n 条消息",
-		LangTraditionalChinese: "**會話管理**\n" +
+			"/history [n] — 查看最近 n 条消息\n" +
+			"/clear — 清除会话上下文\n" +
+			"/compress — 压缩上下文\n" +
+			"/attach — 附加到已有会话\n" +
+			"/export — 导出对话记录",
+		LangTraditionalChinese: "**會話**\n" +
 			"/new [名稱] — 建立新會話\n" +
 			"/list — 列出會話列表\n" +
 			"/search <關鍵詞> — 搜尋會話\n" +
@@ -1185,8 +1402,12 @@ var messages = map[MsgKey]map[Language]string{
 			"/delete <序號>|1,2,3|3-7|1,3-5,8 — 刪除會話\n" +
 			"/name [序號] <名稱> — 命名會話\n" +
 			"/current — 查看當前會話\n" +
-			"/history [n] — 查看最近 n 條訊息",
-		LangJapanese: "**セッション管理**\n" +
+			"/history [n] — 查看最近 n 條訊息\n" +
+			"/clear — 清除會話上下文\n" +
+			"/compress — 壓縮上下文\n" +
+			"/attach — 附加到已有會話\n" +
+			"/export — 匯出對話記錄",
+		LangJapanese: "**セッション**\n" +
 			"/new [名前] — 新しいセッションを開始\n" +
 			"/list — セッション一覧\n" +
 			"/search <キーワード> — セッション検索\n" +
@@ -1194,8 +1415,12 @@ var messages = map[MsgKey]map[Language]string{
 			"/delete <番号>|1,2,3|3-7|1,3-5,8 — セッション削除\n" +
 			"/name [番号] <名前> — セッションに名前を付ける\n" +
 			"/current — 現在のセッションを表示\n" +
-			"/history [n] — 直近 n 件のメッセージを表示",
-		LangSpanish: "**Gestión de sesiones**\n" +
+			"/history [n] — 直近 n 件のメッセージを表示\n" +
+			"/clear — セッションコンテキストをクリア\n" +
+			"/compress — コンテキスト圧縮\n" +
+			"/attach — 既存セッションに接続\n" +
+			"/export — 会話をエクスポート",
+		LangSpanish: "**Sesión**\n" +
 			"/new [nombre] — Iniciar nueva sesión\n" +
 			"/list — Listar sesiones\n" +
 			"/search <keyword> — Buscar sesiones\n" +
@@ -1203,57 +1428,78 @@ var messages = map[MsgKey]map[Language]string{
 			"/delete <número>|1,2,3|3-7|1,3-5,8 — Eliminar sesión(es)\n" +
 			"/name [número] <texto> — Nombrar sesión\n" +
 			"/current — Mostrar sesión activa\n" +
-			"/history [n] — Mostrar últimos n mensajes",
+			"/history [n] — Mostrar últimos n mensajes\n" +
+			"/clear — Limpiar contexto de sesión\n" +
+			"/compress — Comprimir contexto\n" +
+			"/attach — Adjuntar a sesión existente\n" +
+			"/export — Exportar conversación",
 	},
 	MsgHelpAgentSection: {
-		LangEnglish: "**Agent Configuration**\n" +
+		LangEnglish: "**Agent**\n" +
 			"/model [switch <name>] — View/switch model\n" +
+			"/reasoning [level] — View/set reasoning effort\n" +
 			"/mode [name] — View/switch permission mode\n" +
+			"/lang [en|zh|...] — View/switch language\n" +
 			"/provider [list|add|...] — Manage API providers\n" +
-			"/memory [add|global|...] — View/edit memory files\n" +
-			"/allow <tool> — Pre-allow a tool\n" +
-			"/lang [en|zh|...] — View/switch language",
+			"/memory [add|global|...] — Agent memory files\n" +
+			"/notes [add|list|...] — Persistent notes/memos\n" +
+			"/quiet [on|off] — Toggle quiet mode\n" +
+			"/tts [on|off] — Toggle text-to-speech",
 		LangChinese: "**Agent 配置**\n" +
 			"/model [switch <名称>] — 查看/切换模型\n" +
+			"/reasoning [级别] — 查看/设置推理强度\n" +
 			"/mode [名称] — 查看/切换权限模式\n" +
+			"/lang [en|zh|...] — 查看/切换语言\n" +
 			"/provider [list|add|...] — 管理 API Provider\n" +
-			"/memory [add|global|...] — 查看/编辑记忆文件\n" +
-			"/allow <工具名> — 预授权工具\n" +
-			"/lang [en|zh|...] — 查看/切换语言",
+			"/memory [add|global|...] — Agent 记忆文件\n" +
+			"/notes [add|list|...] — 持久化笔记/备忘\n" +
+			"/quiet [on|off] — 切换静默模式\n" +
+			"/tts [on|off] — 切换语音合成",
 		LangTraditionalChinese: "**Agent 配置**\n" +
 			"/model [switch <名稱>] — 查看/切換模型\n" +
+			"/reasoning [級別] — 查看/設定推理強度\n" +
 			"/mode [名稱] — 查看/切換權限模式\n" +
+			"/lang [en|zh|...] — 查看/切換語言\n" +
 			"/provider [list|add|...] — 管理 API Provider\n" +
-			"/memory [add|global|...] — 查看/編輯記憶檔案\n" +
-			"/allow <工具名> — 預授權工具\n" +
-			"/lang [en|zh|...] — 查看/切換語言",
+			"/memory [add|global|...] — Agent 記憶檔案\n" +
+			"/notes [add|list|...] — 持久化筆記/備忘\n" +
+			"/quiet [on|off] — 切換靜默模式\n" +
+			"/tts [on|off] — 切換語音合成",
 		LangJapanese: "**エージェント設定**\n" +
 			"/model [switch <名前>] — モデルの表示/切り替え\n" +
+			"/reasoning [レベル] — 推論レベルの表示/設定\n" +
 			"/mode [名前] — 権限モードの表示/切り替え\n" +
+			"/lang [en|zh|...] — 言語の表示/切り替え\n" +
 			"/provider [list|add|...] — API プロバイダ管理\n" +
-			"/memory [add|global|...] — メモリの表示/編集\n" +
-			"/allow <ツール名> — ツールを事前許可\n" +
-			"/lang [en|zh|...] — 言語の表示/切り替え",
+			"/memory [add|global|...] — エージェントメモリ\n" +
+			"/notes [add|list|...] — 永続メモ\n" +
+			"/quiet [on|off] — 静音モード切り替え\n" +
+			"/tts [on|off] — 音声合成切り替え",
 		LangSpanish: "**Configuración del agente**\n" +
 			"/model [switch <nombre>] — Ver/cambiar modelo\n" +
+			"/reasoning [nivel] — Ver/configurar razonamiento\n" +
 			"/mode [nombre] — Ver/cambiar modo de permisos\n" +
+			"/lang [en|zh|...] — Ver/cambiar idioma\n" +
 			"/provider [list|add|...] — Gestionar proveedores\n" +
-			"/memory [add|global|...] — Ver/editar memoria\n" +
-			"/allow <herramienta> — Pre-autorizar herramienta\n" +
-			"/lang [en|zh|...] — Ver/cambiar idioma",
+			"/memory [add|global|...] — Memoria del agente\n" +
+			"/notes [add|list|...] — Notas persistentes\n" +
+			"/quiet [on|off] — Alternar modo silencioso\n" +
+			"/tts [on|off] — Alternar texto a voz",
 	},
 	MsgHelpToolsSection: {
-		LangEnglish: "**Tools & Automation**\n" +
+		LangEnglish: "**Tools**\n" +
 			"/shell <command> — Run a shell command (! shortcut)\n" +
-			"/show <ref> — View file / directory / snippet by reference\n" +
+			"/show <ref> — View file/directory/snippet by reference\n" +
 			"/dir [path|reset] — Show, switch, or reset work directory\n" +
 			"/cron [add|list|del|...] — Scheduled tasks\n" +
 			"/commands [add|del] — Custom commands\n" +
 			"/alias [add|del] — Command aliases\n" +
 			"/skills — List agent skills\n" +
-			"/compress — Compress context\n" +
-			"/stop — Stop current execution",
-		LangChinese: "**工具与自动化**\n" +
+			"/allow <tool> — Pre-allow a tool\n" +
+			"/stop — Stop current execution\n" +
+			"/ps <text> — Inject text into running session\n" +
+			"/diff — View code diff",
+		LangChinese: "**工具**\n" +
 			"/shell <命令> — 执行 Shell 命令（!快捷方式）\n" +
 			"/show <引用> — 按引用查看文件、目录或代码片段\n" +
 			"/dir [路径|reset] — 查看、切换或重置工作目录\n" +
@@ -1261,9 +1507,11 @@ var messages = map[MsgKey]map[Language]string{
 			"/commands [add|del] — 自定义命令\n" +
 			"/alias [add|del] — 命令别名\n" +
 			"/skills — 列出 Agent Skills\n" +
-			"/compress — 压缩上下文\n" +
-			"/stop — 停止当前执行",
-		LangTraditionalChinese: "**工具與自動化**\n" +
+			"/allow <工具名> — 预授权工具\n" +
+			"/stop — 停止当前执行\n" +
+			"/ps <文本> — 向运行中的会话注入文本\n" +
+			"/diff — 查看代码变更",
+		LangTraditionalChinese: "**工具**\n" +
 			"/shell <命令> — 執行 Shell 命令（!快捷方式）\n" +
 			"/show <引用> — 按引用查看檔案、目錄或程式碼片段\n" +
 			"/dir [路徑|reset] — 查看、切換或重置工作目錄\n" +
@@ -1271,9 +1519,11 @@ var messages = map[MsgKey]map[Language]string{
 			"/commands [add|del] — 自訂命令\n" +
 			"/alias [add|del] — 命令別名\n" +
 			"/skills — 列出 Agent Skills\n" +
-			"/compress — 壓縮上下文\n" +
-			"/stop — 停止當前執行",
-		LangJapanese: "**ツール・自動化**\n" +
+			"/allow <工具名> — 預授權工具\n" +
+			"/stop — 停止當前執行\n" +
+			"/ps <文字> — 向執行中的會話注入文字\n" +
+			"/diff — 查看程式碼變更",
+		LangJapanese: "**ツール**\n" +
 			"/shell <コマンド> — シェルコマンド実行（!ショートカット）\n" +
 			"/show <参照> — ファイル/ディレクトリ/スニペットを参照で表示\n" +
 			"/dir [パス|reset] — 作業ディレクトリの表示/切り替え/リセット\n" +
@@ -1281,65 +1531,121 @@ var messages = map[MsgKey]map[Language]string{
 			"/commands [add|del] — カスタムコマンド\n" +
 			"/alias [add|del] — コマンドエイリアス\n" +
 			"/skills — エージェントスキル一覧\n" +
-			"/compress — コンテキスト圧縮\n" +
-			"/stop — 現在の実行を停止",
-		LangSpanish: "**Herramientas y automatización**\n" +
+			"/allow <ツール名> — ツールを事前許可\n" +
+			"/stop — 現在の実行を停止\n" +
+			"/ps <テキスト> — 実行中セッションにテキスト注入\n" +
+			"/diff — コード差分を表示",
+		LangSpanish: "**Herramientas**\n" +
 			"/shell <comando> — Ejecutar comando shell (! atajo)\n" +
 			"/show <ref> — Ver archivo/directorio/fragmento por referencia\n" +
-			"/dir [ruta|reset] — Ver, cambiar o restablecer directorio de trabajo\n" +
+			"/dir [ruta|reset] — Ver, cambiar o restablecer directorio\n" +
 			"/cron [add|list|del|...] — Tareas programadas\n" +
 			"/commands [add|del] — Comandos personalizados\n" +
 			"/alias [add|del] — Alias de comandos\n" +
 			"/skills — Listar skills del agente\n" +
-			"/compress — Comprimir contexto\n" +
-			"/stop — Detener ejecución actual",
+			"/allow <herramienta> — Pre-autorizar herramienta\n" +
+			"/stop — Detener ejecución actual\n" +
+			"/ps <texto> — Inyectar texto en sesión activa\n" +
+			"/diff — Ver diferencias de código",
+	},
+	MsgHelpInteractionSection: {
+		LangEnglish: "**Interaction**\n" +
+			"/web — Open Web Terminal\n" +
+			"/terminal — Terminal access\n" +
+			"/heartbeat [on|off|interval] — Session heartbeat\n" +
+			"/watch — Monitor session status\n" +
+			"/mute — Mute notifications\n" +
+			"/unmute — Unmute notifications\n" +
+			"/groups — Group management\n" +
+			"/bind — Bind device/workspace",
+		LangChinese: "**交互**\n" +
+			"/web — 打开 Web Terminal\n" +
+			"/terminal — 终端访问\n" +
+			"/heartbeat [on|off|间隔] — 会话心跳\n" +
+			"/watch — 监控会话状态\n" +
+			"/mute — 静音通知\n" +
+			"/unmute — 取消静音\n" +
+			"/groups — 分组管理\n" +
+			"/bind — 绑定设备/工作空间",
+		LangTraditionalChinese: "**互動**\n" +
+			"/web — 開啟 Web Terminal\n" +
+			"/terminal — 終端機存取\n" +
+			"/heartbeat [on|off|間隔] — 會話心跳\n" +
+			"/watch — 監控會話狀態\n" +
+			"/mute — 靜音通知\n" +
+			"/unmute — 取消靜音\n" +
+			"/groups — 分組管理\n" +
+			"/bind — 綁定裝置/工作空間",
+		LangJapanese: "**インタラクション**\n" +
+			"/web — Web Terminal を開く\n" +
+			"/terminal — ターミナルアクセス\n" +
+			"/heartbeat [on|off|間隔] — セッションハートビート\n" +
+			"/watch — セッション監視\n" +
+			"/mute — 通知をミュート\n" +
+			"/unmute — ミュート解除\n" +
+			"/groups — グループ管理\n" +
+			"/bind — デバイス/ワークスペースをバインド",
+		LangSpanish: "**Interacción**\n" +
+			"/web — Abrir Web Terminal\n" +
+			"/terminal — Acceso a terminal\n" +
+			"/heartbeat [on|off|intervalo] — Latido de sesión\n" +
+			"/watch — Monitorear estado de sesión\n" +
+			"/mute — Silenciar notificaciones\n" +
+			"/unmute — Activar notificaciones\n" +
+			"/groups — Gestión de grupos\n" +
+			"/bind — Vincular dispositivo/workspace",
 	},
 	MsgHelpSystemSection: {
 		LangEnglish: "**System**\n" +
-			"/config [get|set|reload] — Runtime configuration\n" +
+			"/status — System status\n" +
 			"/doctor — System diagnostics\n" +
 			"/usage — Account/model quota usage\n" +
+			"/config [get|set|reload] — Runtime configuration\n" +
 			"/whoami — Show your User ID\n" +
+			"/workspace — Workspace info\n" +
+			"/version — Show version\n" +
 			"/upgrade — Check for updates\n" +
-			"/restart — Restart service\n" +
-			"/status — System status\n" +
-			"/version — Show version",
+			"/restart — Restart service",
 		LangChinese: "**系统**\n" +
-			"/config [get|set|reload] — 运行时配置\n" +
+			"/status — 系统状态\n" +
 			"/doctor — 系统诊断\n" +
 			"/usage — 账号/模型限额\n" +
+			"/config [get|set|reload] — 运行时配置\n" +
 			"/whoami — 查看你的 User ID\n" +
+			"/workspace — 工作空间信息\n" +
+			"/version — 查看版本\n" +
 			"/upgrade — 检查更新\n" +
-			"/restart — 重启服务\n" +
-			"/status — 系统状态\n" +
-			"/version — 查看版本",
+			"/restart — 重启服务",
 		LangTraditionalChinese: "**系統**\n" +
-			"/config [get|set|reload] — 執行階段配置\n" +
+			"/status — 系統狀態\n" +
 			"/doctor — 系統診斷\n" +
 			"/usage — 帳號/模型限額\n" +
+			"/config [get|set|reload] — 執行階段配置\n" +
 			"/whoami — 查看你的 User ID\n" +
+			"/workspace — 工作空間資訊\n" +
+			"/version — 查看版本\n" +
 			"/upgrade — 檢查更新\n" +
-			"/restart — 重啟服務\n" +
-			"/status — 系統狀態\n" +
-			"/version — 查看版本",
+			"/restart — 重啟服務",
 		LangJapanese: "**システム**\n" +
-			"/config [get|set|reload] — ランタイム設定\n" +
+			"/status — システム状態\n" +
 			"/doctor — システム診断\n" +
 			"/usage — アカウント/モデル使用量\n" +
+			"/config [get|set|reload] — ランタイム設定\n" +
 			"/whoami — User ID を表示\n" +
+			"/workspace — ワークスペース情報\n" +
+			"/version — バージョン表示\n" +
 			"/upgrade — アップデート確認\n" +
-			"/restart — サービス再起動\n" +
-			"/status — システム状態\n" +
-			"/version — バージョン表示",
+			"/restart — サービス再起動",
 		LangSpanish: "**Sistema**\n" +
-			"/config [get|set|reload] — Configuración\n" +
+			"/status — Estado del sistema\n" +
 			"/doctor — Diagnósticos del sistema\n" +
 			"/usage — Uso de cuota de cuenta/modelo\n" +
+			"/config [get|set|reload] — Configuración\n" +
 			"/whoami — Mostrar tu User ID\n" +
+			"/workspace — Info del workspace\n" +
+			"/version — Mostrar versión\n" +
 			"/upgrade — Buscar actualizaciones\n" +
-			"/restart — Reiniciar servicio\n" +
-			"/status — Estado del sistema\n" +
-			"/version — Mostrar versión",
+			"/restart — Reiniciar servicio",
 	},
 	MsgHelpTip: {
 		LangEnglish:            "Tip: Commands support prefix matching, e.g. /pro l = /provider list",
@@ -2149,6 +2455,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "✅ コンテキスト圧縮完了。",
 		LangSpanish:            "✅ Contexto comprimido.",
 	},
+	MsgAutoContinuing: {
+		LangEnglish:            "🔄 Auto-continuing (round %d/%d)...",
+		LangChinese:            "🔄 自动继续中（第 %d/%d 轮）...",
+		LangTraditionalChinese: "🔄 自動繼續中（第 %d/%d 輪）...",
+		LangJapanese:           "🔄 自動継続中（ラウンド %d/%d）...",
+		LangSpanish:            "🔄 Auto-continuando (ronda %d/%d)...",
+	},
+	MsgAutoContinueNotify: {
+		LangEnglish:            "⚠️ The agent may not have completed its task (round %d). Send a message to continue.",
+		LangChinese:            "⚠️ 代理可能尚未完成任务（第 %d 轮）。发送消息以继续。",
+		LangTraditionalChinese: "⚠️ 代理可能尚未完成任務（第 %d 輪）。發送訊息以繼續。",
+		LangJapanese:           "⚠️ エージェントがタスクを完了していない可能性があります（ラウンド %d）。続行するにはメッセージを送信してください。",
+		LangSpanish:            "⚠️ El agente puede no haber completado su tarea (ronda %d). Envíe un mensaje para continuar.",
+	},
 
 	// Inline strings for engine.go commands
 	MsgStatusMode: {
@@ -2930,6 +3250,111 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "⏳ 前のセッションを終了中です（通常は数秒、最大2分）。新しいセッションは自動的に開始されます。",
 		LangSpanish:            "⏳ Cerrando la sesión anterior (normalmente unos segundos, hasta 2 minutos). La nueva sesión se iniciará automáticamente.",
 	},
+	MsgSessionStatusWaiting: {
+		LangEnglish:            "Waiting",
+		LangChinese:            "等待中",
+		LangTraditionalChinese: "等待中",
+		LangJapanese:           "待機中",
+		LangSpanish:            "Esperando",
+	},
+	MsgSessionStatusRunning: {
+		LangEnglish:            "Running",
+		LangChinese:            "运行中",
+		LangTraditionalChinese: "運行中",
+		LangJapanese:           "実行中",
+		LangSpanish:            "Ejecutando",
+	},
+	MsgSessionStatusDone: {
+		LangEnglish:            "Done",
+		LangChinese:            "完成",
+		LangTraditionalChinese: "完成",
+		LangJapanese:           "完了",
+		LangSpanish:            "Listo",
+	},
+	MsgSessionExportText: {
+		LangEnglish:            "Export Text",
+		LangChinese:            "导出文本",
+		LangTraditionalChinese: "匯出文字",
+		LangJapanese:           "テキスト出力",
+		LangSpanish:            "Exportar texto",
+	},
+	MsgSessionOpenTerminal: {
+		LangEnglish:            "Open Terminal",
+		LangChinese:            "打开终端",
+		LangTraditionalChinese: "開啟終端",
+		LangJapanese:           "ターミナルを開く",
+		LangSpanish:            "Abrir terminal",
+	},
+	MsgSessionGetLink: {
+		LangEnglish:            "Get Link",
+		LangChinese:            "获取链接",
+		LangTraditionalChinese: "取得連結",
+		LangJapanese:           "リンクを取得",
+		LangSpanish:            "Obtener enlace",
+	},
+	MsgSessionClose: {
+		LangEnglish:            "Close Session",
+		LangChinese:            "关闭会话",
+		LangTraditionalChinese: "關閉會話",
+		LangJapanese:           "セッションを閉じる",
+		LangSpanish:            "Cerrar sesión",
+	},
+	MsgSessionScreenshot: {
+		LangEnglish:            "Screenshot",
+		LangChinese:            "截屏",
+		LangTraditionalChinese: "截圖",
+		LangJapanese:           "スクリーンショット",
+		LangSpanish:            "Captura",
+	},
+	MsgSessionTerminalURL: {
+		LangEnglish:            "Web Terminal: %s",
+		LangChinese:            "Web 终端: %s",
+		LangTraditionalChinese: "Web 終端: %s",
+		LangJapanese:           "Web ターミナル: %s",
+		LangSpanish:            "Terminal web: %s",
+	},
+	MsgCmdTerminal: {
+		LangEnglish:            "Show terminal control card (screenshot, web terminal, key injection)",
+		LangChinese:            "显示终端控制卡片（截屏、Web 终端、快捷键注入）",
+		LangTraditionalChinese: "顯示終端控制卡片（截圖、Web 終端、快速鍵注入）",
+		LangJapanese:           "ターミナル操作カードを表示（スクリーンショット、Webターミナル、キー入力）",
+		LangSpanish:            "Mostrar tarjeta de control de terminal (captura, terminal web, teclas)",
+	},
+	MsgTerminalNoSession: {
+		LangEnglish:            "No active session. Start a task first.",
+		LangChinese:            "没有活跃会话，请先发送任务。",
+		LangTraditionalChinese: "沒有活躍會話，請先發送任務。",
+		LangJapanese:           "アクティブなセッションがありません。先にタスクを送信してください。",
+		LangSpanish:            "No hay sesión activa. Envía una tarea primero.",
+	},
+	MsgShortcutY: {
+		LangEnglish:            "Confirm (yes)",
+		LangChinese:            "确认 (yes)",
+		LangTraditionalChinese: "確認 (yes)",
+		LangJapanese:           "確認 (yes)",
+		LangSpanish:            "Confirmar (yes)",
+	},
+	MsgShortcutN: {
+		LangEnglish:            "Reject (no)",
+		LangChinese:            "拒绝 (no)",
+		LangTraditionalChinese: "拒絕 (no)",
+		LangJapanese:           "拒否 (no)",
+		LangSpanish:            "Rechazar (no)",
+	},
+	MsgShortcutCC: {
+		LangEnglish:            "Interrupt (Ctrl+C)",
+		LangChinese:            "中断 (Ctrl+C)",
+		LangTraditionalChinese: "中斷 (Ctrl+C)",
+		LangJapanese:           "中断 (Ctrl+C)",
+		LangSpanish:            "Interrumpir (Ctrl+C)",
+	},
+	MsgShortcutEsc: {
+		LangEnglish:            "Cancel (Escape)",
+		LangChinese:            "取消 (Escape)",
+		LangTraditionalChinese: "取消 (Escape)",
+		LangJapanese:           "キャンセル (Escape)",
+		LangSpanish:            "Cancelar (Escape)",
+	},
 	MsgDeleteUsage: {
 		LangEnglish:            "Usage: `/delete <number>` or `/delete 1,2,3` or `/delete 3-7` or `/delete 1,3-5,8`.\nUse `/list` to see session numbers.",
 		LangChinese:            "用法：`/delete <序号>`，或 `/delete 1,2,3`，或 `/delete 3-7`，或 `/delete 1,3-5,8`。\n使用 `/list` 查看会话序号。",
@@ -3531,11 +3956,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Ejecutar un comando shell, arg: <comando>",
 	},
 	MsgBuiltinCmdDir: {
-		LangEnglish:            "Show, switch, or reset agent working directory, arg: <path>",
-		LangChinese:            "查看、切换或重置 Agent 工作目录，参数: <路径>",
-		LangTraditionalChinese: "查看、切換或重置 Agent 工作目錄，參數: <路徑>",
-		LangJapanese:           "エージェントの作業ディレクトリを表示/変更/リセット、引数: <パス>",
-		LangSpanish:            "Ver, cambiar o restablecer el directorio de trabajo del agente, arg: <ruta>",
+		LangEnglish:            "Show, switch, add, or reset agent working directory, arg: <path|add|reset>",
+		LangChinese:            "查看、切换、添加或重置 Agent 工作目录，参数: <路径|add|reset>",
+		LangTraditionalChinese: "查看、切換、添加或重置 Agent 工作目錄，參數: <路徑|add|reset>",
+		LangJapanese:           "エージェントの作業ディレクトリを表示/変更/追加/リセット、引数: <パス|add|reset>",
+		LangSpanish:            "Ver, cambiar, añadir o restablecer el directorio de trabajo del agente, arg: <ruta|add|reset>",
 	},
 	MsgBuiltinCmdDiff: {
 		LangEnglish:            "Generate git diff as HTML file, arg: [target]",
@@ -3550,6 +3975,97 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "向正在執行的任務追加補充資訊",
 		LangJapanese:           "実行中のタスクに補足情報を送信",
 		LangSpanish:            "Enviar un P.S. a la tarea en curso",
+	},
+	MsgBuiltinCmdClear: {
+		LangEnglish:            "Clear current session context",
+		LangChinese:            "清除当前会话上下文",
+		LangTraditionalChinese: "清除當前會話上下文",
+		LangJapanese:           "現在のセッションコンテキストをクリア",
+		LangSpanish:            "Limpiar contexto de sesión actual",
+	},
+	MsgBuiltinCmdAttach: {
+		LangEnglish:            "Attach to an existing session",
+		LangChinese:            "附加到已有会话",
+		LangTraditionalChinese: "附加到已有會話",
+		LangJapanese:           "既存のセッションに接続",
+		LangSpanish:            "Adjuntar a sesión existente",
+	},
+	MsgBuiltinCmdExport: {
+		LangEnglish:            "Export conversation history",
+		LangChinese:            "导出对话记录",
+		LangTraditionalChinese: "匯出對話記錄",
+		LangJapanese:           "会話履歴をエクスポート",
+		LangSpanish:            "Exportar historial de conversación",
+	},
+	MsgBuiltinCmdNotes: {
+		LangEnglish:            "Manage persistent notes/memos",
+		LangChinese:            "管理持久化笔记/备忘",
+		LangTraditionalChinese: "管理持久化筆記/備忘",
+		LangJapanese:           "永続メモの管理",
+		LangSpanish:            "Gestionar notas persistentes",
+	},
+	MsgBuiltinCmdWeb: {
+		LangEnglish:            "Open Web Terminal in browser",
+		LangChinese:            "在浏览器中打开 Web Terminal",
+		LangTraditionalChinese: "在瀏覽器中開啟 Web Terminal",
+		LangJapanese:           "ブラウザで Web Terminal を開く",
+		LangSpanish:            "Abrir Web Terminal en el navegador",
+	},
+	MsgBuiltinCmdWatch: {
+		LangEnglish:            "Monitor/poll session status",
+		LangChinese:            "监控/轮询会话状态",
+		LangTraditionalChinese: "監控/輪詢會話狀態",
+		LangJapanese:           "セッション状態を監視",
+		LangSpanish:            "Monitorear estado de sesión",
+	},
+	MsgBuiltinCmdMute: {
+		LangEnglish:            "Mute notifications",
+		LangChinese:            "静音通知",
+		LangTraditionalChinese: "靜音通知",
+		LangJapanese:           "通知をミュート",
+		LangSpanish:            "Silenciar notificaciones",
+	},
+	MsgBuiltinCmdUnmute: {
+		LangEnglish:            "Unmute notifications",
+		LangChinese:            "取消静音",
+		LangTraditionalChinese: "取消靜音",
+		LangJapanese:           "ミュート解除",
+		LangSpanish:            "Activar notificaciones",
+	},
+	MsgBuiltinCmdGroups: {
+		LangEnglish:            "Manage session groups",
+		LangChinese:            "管理会话分组",
+		LangTraditionalChinese: "管理會話分組",
+		LangJapanese:           "セッショングループ管理",
+		LangSpanish:            "Gestionar grupos de sesión",
+	},
+	MsgBuiltinCmdWhoami: {
+		LangEnglish:            "Show your User ID",
+		LangChinese:            "查看你的 User ID",
+		LangTraditionalChinese: "查看你的 User ID",
+		LangJapanese:           "User ID を表示",
+		LangSpanish:            "Mostrar tu User ID",
+	},
+	MsgBuiltinCmdWorkspace: {
+		LangEnglish:            "Workspace info and management",
+		LangChinese:            "工作空间信息与管理",
+		LangTraditionalChinese: "工作空間資訊與管理",
+		LangJapanese:           "ワークスペース情報と管理",
+		LangSpanish:            "Información y gestión del workspace",
+	},
+	MsgBuiltinCmdTerminal: {
+		LangEnglish:            "Terminal access and management",
+		LangChinese:            "终端访问与管理",
+		LangTraditionalChinese: "終端機存取與管理",
+		LangJapanese:           "ターミナルアクセスと管理",
+		LangSpanish:            "Acceso y gestión de terminal",
+	},
+	MsgBuiltinCmdInfo: {
+		LangEnglish:            "Session info panel",
+		LangChinese:            "会话信息面板",
+		LangTraditionalChinese: "會話資訊面板",
+		LangJapanese:           "セッション情報パネル",
+		LangSpanish:            "Panel de información de sesión",
 	},
 	MsgDiffEmpty: {
 		LangEnglish:            "No diff — clean working tree (or no changes vs `%s`).",
@@ -3572,6 +4088,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "✅ 作業ディレクトリを変更しました: `%s`\n次のセッションはこのディレクトリで起動します。",
 		LangSpanish:            "✅ Directorio de trabajo cambiado a: `%s`\nLa próxima sesión iniciará en este directorio.",
 	},
+	MsgDirAdded: {
+		LangEnglish:            "✅ Directory added to history: `%s`",
+		LangChinese:            "✅ 目录已添加到历史: `%s`",
+		LangTraditionalChinese: "✅ 目錄已添加到歷史: `%s`",
+		LangJapanese:           "✅ ディレクトリを履歴に追加しました: `%s`",
+		LangSpanish:            "✅ Directorio añadido al historial: `%s`",
+	},
 	MsgDirCurrent: {
 		LangEnglish:            "📂 Current work directory: `%s`",
 		LangChinese:            "📂 当前工作目录: `%s`",
@@ -3587,11 +4110,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "✅ El directorio de trabajo se restauró al valor predeterminado configurado: `%s`",
 	},
 	MsgDirUsage: {
-		LangEnglish:            "Usage: `/dir <path>`\n       `/dir reset`\nExample: `/dir ../project`",
-		LangChinese:            "用法: `/dir <路径>`\n      `/dir reset`\n示例: `/dir ../project`",
-		LangTraditionalChinese: "用法: `/dir <路徑>`\n      `/dir reset`\n範例: `/dir ../project`",
-		LangJapanese:           "使い方: `/dir <パス>`\n       `/dir reset`\n例: `/dir ../project`",
-		LangSpanish:            "Uso: `/dir <ruta>`\n      `/dir reset`\nEjemplo: `/dir ../project`",
+		LangEnglish:            "Usage: `/dir <path>` — switch directory\n       `/dir add <path>` — add to list without switching\n       `/dir reset` — reset to base directory\nExample: `/dir ../project`",
+		LangChinese:            "用法: `/dir <路径>` — 切换目录\n      `/dir add <路径>` — 添加到列表（不切换）\n      `/dir reset` — 重置为基础目录\n示例: `/dir ../project`",
+		LangTraditionalChinese: "用法: `/dir <路徑>` — 切換目錄\n      `/dir add <路徑>` — 添加到列表（不切換）\n      `/dir reset` — 重置為基礎目錄\n範例: `/dir ../project`",
+		LangJapanese:           "使い方: `/dir <パス>` — ディレクトリ切替\n       `/dir add <パス>` — 切替せず履歴に追加\n       `/dir reset` — リセット\n例: `/dir ../project`",
+		LangSpanish:            "Uso: `/dir <ruta>` — cambiar directorio\n      `/dir add <ruta>` — añadir sin cambiar\n      `/dir reset` — restablecer\nEjemplo: `/dir ../project`",
 	},
 	MsgDirNotSupported: {
 		LangEnglish:            "This agent does not support dynamic work directory switching.",
@@ -3663,6 +4186,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "まだディレクトリ履歴がありません。`/dir <パス>` で切替えるか、**リセット** で既定に戻せます。",
 		LangSpanish:            "Aún no hay historial de directorios. Usa `/dir <ruta>` o **Restablecer** al valor por defecto.",
 	},
+	MsgDirCardHint: {
+		LangEnglish:            "`/dir add <path>` add without switching | `/workspace route <path>` rebind channel",
+		LangChinese:            "`/dir add <路径>` 添加不切换 | `/workspace route <路径>` 换绑频道目录",
+		LangTraditionalChinese: "`/dir add <路徑>` 添加不切換 | `/workspace route <路徑>` 換綁頻道目錄",
+		LangJapanese:           "`/dir add <パス>` 切替せず追加 | `/workspace route <パス>` チャンネル再バインド",
+		LangSpanish:            "`/dir add <ruta>` añadir sin cambiar | `/workspace route <ruta>` rebindear canal",
+	},
 	MsgDirCardReset: {
 		LangEnglish:            "Reset",
 		LangChinese:            "重置",
@@ -3676,6 +4206,111 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "上一目錄",
 		LangJapanese:           "前へ",
 		LangSpanish:            "Anterior",
+	},
+	MsgGroupCreateBtn: {
+		LangEnglish:            "Group",
+		LangChinese:            "建群",
+		LangTraditionalChinese: "建群",
+		LangJapanese:           "グループ",
+		LangSpanish:            "Grupo",
+	},
+	MsgGroupCreated: {
+		LangEnglish:            "Group chat created: %s",
+		LangChinese:            "群聊已创建: %s",
+		LangTraditionalChinese: "群聊已建立: %s",
+		LangJapanese:           "グループチャット作成: %s",
+		LangSpanish:            "Chat grupal creado: %s",
+	},
+	MsgAttachUsage: {
+		LangEnglish:            "Usage: /attach <number | id_prefix | name>",
+		LangChinese:            "用法: /attach <序号 | ID前缀 | 名称>",
+		LangTraditionalChinese: "用法: /attach <序號 | ID前綴 | 名稱>",
+		LangJapanese:           "使い方: /attach <番号 | IDプレフィックス | 名前>",
+		LangSpanish:            "Uso: /attach <número | prefijo_id | nombre>",
+	},
+	MsgAttachSuccess: {
+		LangEnglish:            "Session attached: %s (%s)",
+		LangChinese:            "会话已绑定: %s (%s)",
+		LangTraditionalChinese: "會話已綁定: %s (%s)",
+		LangJapanese:           "セッション接続: %s (%s)",
+		LangSpanish:            "Sesión vinculada: %s (%s)",
+	},
+	MsgClearSuccess: {
+		LangEnglish:            "Session cleared. Next message starts a new session.",
+		LangChinese:            "会话已清除，下次发消息将开始新会话。",
+		LangTraditionalChinese: "會話已清除，下次發訊息將開始新會話。",
+		LangJapanese:           "セッションクリア。次のメッセージで新しいセッション開始。",
+		LangSpanish:            "Sesión limpiada. El siguiente mensaje inicia una nueva sesión.",
+	},
+	MsgMuted: {
+		LangEnglish:            "Session muted. Output suppressed until /unmute.",
+		LangChinese:            "会话已静音，输出将被抑制直到 /unmute。",
+		LangTraditionalChinese: "會話已靜音，輸出將被抑制直到 /unmute。",
+		LangJapanese:           "セッションミュート。/unmute まで出力抑制。",
+		LangSpanish:            "Sesión silenciada. Salida suprimida hasta /unmute.",
+	},
+	MsgUnmuted: {
+		LangEnglish:            "Session unmuted.",
+		LangChinese:            "会话已取消静音。",
+		LangTraditionalChinese: "會話已取消靜音。",
+		LangJapanese:           "セッションミュート解除。",
+		LangSpanish:            "Sesión desilenciada.",
+	},
+	MsgGroupsTitle: {
+		LangEnglish:            "Group chats (%d)",
+		LangChinese:            "群聊列表 (%d)",
+		LangTraditionalChinese: "群聊列表 (%d)",
+		LangJapanese:           "グループチャット (%d)",
+		LangSpanish:            "Chats grupales (%d)",
+	},
+	MsgGroupsEmpty: {
+		LangEnglish:            "No group chats found.",
+		LangChinese:            "未找到群聊。",
+		LangTraditionalChinese: "未找到群聊。",
+		LangJapanese:           "グループチャットが見つかりません。",
+		LangSpanish:            "No se encontraron chats grupales.",
+	},
+	MsgGroupDissolved: {
+		LangEnglish:            "Group dissolved: %s",
+		LangChinese:            "群已解散: %s",
+		LangTraditionalChinese: "群已解散: %s",
+		LangJapanese:           "グループ解散: %s",
+		LangSpanish:            "Grupo disuelto: %s",
+	},
+	MsgGroupDissolveBtn: {
+		LangEnglish:            "Dissolve",
+		LangChinese:            "解散",
+		LangTraditionalChinese: "解散",
+		LangJapanese:           "解散",
+		LangSpanish:            "Disolver",
+	},
+	MsgGroupDissolveErr: {
+		LangEnglish:            "Failed to dissolve group: %s",
+		LangChinese:            "解散群失败: %s",
+		LangTraditionalChinese: "解散群失敗: %s",
+		LangJapanese:           "グループ解散失敗: %s",
+		LangSpanish:            "Error al disolver grupo: %s",
+	},
+	MsgDirBrowserTitle: {
+		LangEnglish:            "Browse: %s",
+		LangChinese:            "浏览: %s",
+		LangTraditionalChinese: "瀏覽: %s",
+		LangJapanese:           "閲覧: %s",
+		LangSpanish:            "Navegar: %s",
+	},
+	MsgDirBrowserSelect: {
+		LangEnglish:            "Select this",
+		LangChinese:            "选择此目录",
+		LangTraditionalChinese: "選擇此目錄",
+		LangJapanese:           "選択",
+		LangSpanish:            "Seleccionar",
+	},
+	MsgDirBrowserUp: {
+		LangEnglish:            "⬆ Parent",
+		LangChinese:            "⬆ 上级",
+		LangTraditionalChinese: "⬆ 上級",
+		LangJapanese:           "⬆ 上位",
+		LangSpanish:            "⬆ Arriba",
 	},
 	MsgShow: {
 		LangEnglish:            "View file / directory / snippet by reference",
@@ -3958,6 +4593,162 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "`/workspace init` 未啟用本機目錄目標。請使用 git 倉庫地址，或在此專案配置 `workspace_init_allow_local_paths = true`。",
 		LangJapanese:           "`/workspace init` ではローカルディレクトリ対象が無効です。git URL を使うか、このプロジェクトで `workspace_init_allow_local_paths = true` を有効にしてください。",
 		LangSpanish:            "Los destinos de directorio local están deshabilitados para `/workspace init`. Use una URL de git o habilite `workspace_init_allow_local_paths = true` para este proyecto.",
+	},
+	MsgExtPermPrefix: {
+		LangEnglish:            "[Hook] ",
+		LangChinese:            "[Hook] ",
+		LangTraditionalChinese: "[Hook] ",
+		LangJapanese:           "[Hook] ",
+		LangSpanish:            "[Hook] ",
+	},
+	MsgExtPermTimeout: {
+		LangEnglish:            "⏰ Permission request timed out. Falling back to terminal.",
+		LangChinese:            "⏰ 权限请求已超时，回退到终端处理。",
+		LangTraditionalChinese: "⏰ 權限請求已逾時，回退到終端處理。",
+		LangJapanese:           "⏰ 権限リクエストがタイムアウトしました。ターミナルにフォールバックします。",
+		LangSpanish:            "⏰ La solicitud de permiso ha expirado. Volviendo al terminal.",
+	},
+	MsgExtPermNoRoute: {
+		LangEnglish:            "No channel binding found for workspace: %s",
+		LangChinese:            "未找到工作区 %s 的频道绑定",
+		LangTraditionalChinese: "未找到工作區 %s 的頻道綁定",
+		LangJapanese:           "ワークスペース %s のチャンネルバインディングが見つかりません",
+		LangSpanish:            "No se encontró enlace de canal para el espacio de trabajo: %s",
+	},
+	MsgExtNotifyPrefix: {
+		LangEnglish:            "📢 ",
+		LangChinese:            "📢 ",
+		LangTraditionalChinese: "📢 ",
+		LangJapanese:           "📢 ",
+		LangSpanish:            "📢 ",
+	},
+
+	// Session info card translations
+	MsgHelpInfoSection: {
+		LangEnglish:            "**Info**\n/info — Session info panel",
+		LangChinese:            "**信息**\n/info — 会话信息面板",
+		LangTraditionalChinese: "**資訊**\n/info — 會話資訊面板",
+		LangJapanese:           "**情報**\n/info — セッション情報パネル",
+		LangSpanish:            "**Info**\n/info — Panel de información de sesión",
+	},
+	MsgInfoCardTitle: {
+		LangEnglish:            "Session Info",
+		LangChinese:            "会话信息",
+		LangTraditionalChinese: "會話資訊",
+		LangJapanese:           "セッション情報",
+		LangSpanish:            "Información de sesión",
+	},
+	MsgInfoAgent: {
+		LangEnglish:            "**Agent:** %s",
+		LangChinese:            "**Agent:** %s",
+		LangTraditionalChinese: "**Agent:** %s",
+		LangJapanese:           "**Agent:** %s",
+		LangSpanish:            "**Agent:** %s",
+	},
+	MsgInfoWorkspace: {
+		LangEnglish:            "**Workspace:** `%s`",
+		LangChinese:            "**工作目录:** `%s`",
+		LangTraditionalChinese: "**工作目錄:** `%s`",
+		LangJapanese:           "**ワークスペース:** `%s`",
+		LangSpanish:            "**Espacio de trabajo:** `%s`",
+	},
+	MsgInfoDuration: {
+		LangEnglish:            "**Duration:** %s",
+		LangChinese:            "**持续时间:** %s",
+		LangTraditionalChinese: "**持續時間:** %s",
+		LangJapanese:           "**経過時間:** %s",
+		LangSpanish:            "**Duración:** %s",
+	},
+	MsgInfoMessages: {
+		LangEnglish:            "**Messages:** %d",
+		LangChinese:            "**消息数:** %d",
+		LangTraditionalChinese: "**訊息數:** %d",
+		LangJapanese:           "**メッセージ数:** %d",
+		LangSpanish:            "**Mensajes:** %d",
+	},
+	MsgInfoSessionID: {
+		LangEnglish:            "**Session:** `%s`",
+		LangChinese:            "**会话:** `%s`",
+		LangTraditionalChinese: "**會話:** `%s`",
+		LangJapanese:           "**セッション:** `%s`",
+		LangSpanish:            "**Sesión:** `%s`",
+	},
+	MsgInfoBtnScreenshot: {
+		LangEnglish:            "📷 Screenshot",
+		LangChinese:            "📷 截图",
+		LangTraditionalChinese: "📷 截圖",
+		LangJapanese:           "📷 スクリーンショット",
+		LangSpanish:            "📷 Captura",
+	},
+	MsgInfoBtnTerminal: {
+		LangEnglish:            "🖥 Terminal",
+		LangChinese:            "🖥 终端",
+		LangTraditionalChinese: "🖥 終端",
+		LangJapanese:           "🖥 ターミナル",
+		LangSpanish:            "🖥 Terminal",
+	},
+	MsgInfoBtnFiles: {
+		LangEnglish:            "📂 Files",
+		LangChinese:            "📂 文件",
+		LangTraditionalChinese: "📂 檔案",
+		LangJapanese:           "📂 ファイル",
+		LangSpanish:            "📂 Archivos",
+	},
+	MsgInfoBtnCommands: {
+		LangEnglish:            "📜 Commands",
+		LangChinese:            "📜 命令历史",
+		LangTraditionalChinese: "📜 命令歷史",
+		LangJapanese:           "📜 コマンド履歴",
+		LangSpanish:            "📜 Comandos",
+	},
+	MsgInfoBtnResources: {
+		LangEnglish:            "📊 Resources",
+		LangChinese:            "📊 资源",
+		LangTraditionalChinese: "📊 資源",
+		LangJapanese:           "📊 リソース",
+		LangSpanish:            "📊 Recursos",
+	},
+	MsgInfoNoSession: {
+		LangEnglish:            "No active session. Use `/new` to start one.",
+		LangChinese:            "暂无活跃会话，使用 `/new` 创建一个。",
+		LangTraditionalChinese: "暫無活躍會話，使用 `/new` 建立一個。",
+		LangJapanese:           "アクティブなセッションがありません。`/new` で作成してください。",
+		LangSpanish:            "No hay sesión activa. Usa `/new` para crear una.",
+	},
+	MsgInfoCommandsTitle: {
+		LangEnglish:            "Recent Commands",
+		LangChinese:            "最近命令",
+		LangTraditionalChinese: "最近命令",
+		LangJapanese:           "最近のコマンド",
+		LangSpanish:            "Comandos recientes",
+	},
+	MsgInfoCommandsEmpty: {
+		LangEnglish:            "No commands executed yet in this session.",
+		LangChinese:            "本会话暂无命令记录。",
+		LangTraditionalChinese: "本會話暫無命令紀錄。",
+		LangJapanese:           "このセッションではまだコマンドが実行されていません。",
+		LangSpanish:            "Aún no se han ejecutado comandos en esta sesión.",
+	},
+	MsgInfoResourcesTitle: {
+		LangEnglish:            "Resources",
+		LangChinese:            "资源信息",
+		LangTraditionalChinese: "資源資訊",
+		LangJapanese:           "リソース情報",
+		LangSpanish:            "Recursos",
+	},
+	MsgDirOtherGroups: {
+		LangEnglish:            "**Other Groups:**",
+		LangChinese:            "**其他群组:**",
+		LangTraditionalChinese: "**其他群組:**",
+		LangJapanese:           "**その他のグループ:**",
+		LangSpanish:            "**Otros grupos:**",
+	},
+	MsgDirSwitchGroupBtn: {
+		LangEnglish:            "Switch",
+		LangChinese:            "切换",
+		LangTraditionalChinese: "切換",
+		LangJapanese:           "切替",
+		LangSpanish:            "Cambiar",
 	},
 }
 

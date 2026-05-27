@@ -272,6 +272,21 @@ func (a *Agent) Name() string           { return "claudecode" }
 func (a *Agent) CLIBinaryName() string  { return a.cliBin }
 func (a *Agent) CLIDisplayName() string { return "Claude" }
 
+func (a *Agent) ListDirectory(_ context.Context, path string) ([]core.DirEntry, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	var result []core.DirEntry
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		result = append(result, core.DirEntry{Name: e.Name(), IsDir: e.IsDir()})
+	}
+	return result, nil
+}
+
 func (a *Agent) SetWorkDir(dir string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -499,6 +514,63 @@ func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, erro
 	})
 
 	return sessions, nil
+}
+
+func (a *Agent) ListAllSessions(ctx context.Context) ([]core.AgentSessionInfo, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("claudecode: cannot determine home dir: %w", err)
+	}
+
+	projectsBase := filepath.Join(homeDir, ".claude", "projects")
+	projectDirs, err := os.ReadDir(projectsBase)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("claudecode: read projects dir: %w", err)
+	}
+
+	var allSessions []core.AgentSessionInfo
+	for _, projEntry := range projectDirs {
+		if !projEntry.IsDir() {
+			continue
+		}
+		projPath := filepath.Join(projectsBase, projEntry.Name())
+		entries, err := os.ReadDir(projPath)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, ".jsonl") {
+				continue
+			}
+			sessionID := strings.TrimSuffix(name, ".jsonl")
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			summary, msgCount := scanSessionMeta(filepath.Join(projPath, name))
+			allSessions = append(allSessions, core.AgentSessionInfo{
+				ID:           sessionID,
+				Summary:      summary,
+				MessageCount: msgCount,
+				ModifiedAt:   info.ModTime(),
+				ProjectPath:  projEntry.Name(),
+			})
+		}
+	}
+
+	sort.Slice(allSessions, func(i, j int) bool {
+		return allSessions[i].ModifiedAt.After(allSessions[j].ModifiedAt)
+	})
+
+	if len(allSessions) > 100 {
+		allSessions = allSessions[:100]
+	}
+
+	return allSessions, nil
 }
 
 func (a *Agent) DeleteSession(_ context.Context, sessionID string) error {

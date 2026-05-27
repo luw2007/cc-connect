@@ -87,6 +87,9 @@ func main() {
 		case "send":
 			runSend(os.Args[2:])
 			return
+		case "notify":
+			runNotify(os.Args[2:])
+			return
 		case "cron":
 			runCron(os.Args[2:])
 			return
@@ -95,6 +98,12 @@ func main() {
 			return
 		case "sessions":
 			runSessions(os.Args[2:])
+			return
+		case "history":
+			runHistory(os.Args[2:])
+			return
+		case "quoted":
+			runQuoted(os.Args[2:])
 			return
 		case "agent-sid":
 			runAgentSID(os.Args[2:])
@@ -284,6 +293,22 @@ func main() {
 		engine.SetBaseWorkDir(workDir)
 		engine.SetProjectStateStore(projectState)
 		engine.SetDataDir(cfg.DataDir)
+
+		if proj.Notes != nil && proj.Notes.Enabled {
+			notesCfg := core.NotesConfig{
+				Enabled:                 proj.Notes.Enabled,
+				Model:                   proj.Notes.Model,
+				APIKey:                  proj.Notes.APIKey,
+				BaseURL:                 proj.Notes.BaseURL,
+				ExtractionPrompt:        proj.Notes.ExtractionPrompt,
+				ConfirmationTimeoutMins: proj.Notes.ConfirmationTimeoutMins,
+				MaxMemoriesPerSession:   proj.Notes.MaxMemoriesPerSession,
+			}
+			memStorage := core.NewMemoryStorage(filepath.Join(cfg.DataDir, "memories"))
+			me := core.NewMemoryExtractor(notesCfg, memStorage)
+			engine.SetMemoryExtractor(me)
+			go me.StartCleanup(context.Background())
+		}
 
 		// Wire multi-workspace mode
 		if proj.Mode == "multi-workspace" {
@@ -541,6 +566,39 @@ func main() {
 				maxTokens = 12000
 			}
 			engine.SetAutoCompressConfig(true, maxTokens, minGap)
+		}
+		if proj.AutoContinue.Enabled != nil && *proj.AutoContinue.Enabled {
+			maxRounds := 3
+			if proj.AutoContinue.MaxRounds != nil {
+				maxRounds = *proj.AutoContinue.MaxRounds
+			}
+			cooldown := 5 * time.Second
+			if proj.AutoContinue.CooldownSecs != nil {
+				cooldown = time.Duration(*proj.AutoContinue.CooldownSecs) * time.Second
+			}
+			llmFallback := proj.AutoContinue.Rules.LLMFallback != nil && *proj.AutoContinue.Rules.LLMFallback
+			detector, err := core.NewAutoContinueDetector(
+				proj.AutoContinue.Rules.Keywords,
+				proj.AutoContinue.Rules.KeywordsComplete,
+				llmFallback,
+				proj.AutoContinue.Rules.LLMProvider,
+				proj.AutoContinue.Rules.LLMModel,
+			)
+			if err != nil {
+				slog.Error("auto-continue: invalid rules config", "project", proj.Name, "error", err)
+			} else {
+				engine.SetAutoContinueConfig(core.AutoContinueCfg{
+					Enabled:   true,
+					Mode:      proj.AutoContinue.Mode,
+					MaxRounds: maxRounds,
+					Cooldown:  cooldown,
+					Prompt:    proj.AutoContinue.Prompt,
+					Detector:  detector,
+				})
+				if llmFallback {
+					engine.SetLLMJudger(&cliLLMJudger{})
+				}
+			}
 		}
 		resetIdle, defaulted := resolveResetOnIdle(proj.ResetOnIdleMins)
 		engine.SetResetOnIdle(resetIdle)
@@ -1473,6 +1531,41 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 		engine.SetAutoCompressConfig(true, maxTokens, minGap)
 	} else {
 		engine.SetAutoCompressConfig(false, 0, 0)
+	}
+	if proj.AutoContinue.Enabled != nil && *proj.AutoContinue.Enabled {
+		maxRounds := 3
+		if proj.AutoContinue.MaxRounds != nil {
+			maxRounds = *proj.AutoContinue.MaxRounds
+		}
+		cooldown := 5 * time.Second
+		if proj.AutoContinue.CooldownSecs != nil {
+			cooldown = time.Duration(*proj.AutoContinue.CooldownSecs) * time.Second
+		}
+		llmFallback := proj.AutoContinue.Rules.LLMFallback != nil && *proj.AutoContinue.Rules.LLMFallback
+		detector, err := core.NewAutoContinueDetector(
+			proj.AutoContinue.Rules.Keywords,
+			proj.AutoContinue.Rules.KeywordsComplete,
+			llmFallback,
+			proj.AutoContinue.Rules.LLMProvider,
+			proj.AutoContinue.Rules.LLMModel,
+		)
+		if err != nil {
+			slog.Error("auto-continue: invalid rules config on reload", "project", proj.Name, "error", err)
+		} else {
+			engine.SetAutoContinueConfig(core.AutoContinueCfg{
+				Enabled:   true,
+				Mode:      proj.AutoContinue.Mode,
+				MaxRounds: maxRounds,
+				Cooldown:  cooldown,
+				Prompt:    proj.AutoContinue.Prompt,
+				Detector:  detector,
+			})
+			if llmFallback {
+				engine.SetLLMJudger(&cliLLMJudger{})
+			}
+		}
+	} else {
+		engine.SetAutoContinueConfig(core.AutoContinueCfg{Enabled: false})
 	}
 	resetIdle, defaulted := resolveResetOnIdle(proj.ResetOnIdleMins)
 	engine.SetResetOnIdle(resetIdle)

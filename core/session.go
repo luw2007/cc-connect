@@ -22,6 +22,7 @@ type Session struct {
 	AgentType           string         `json:"agent_type,omitempty"`
 	PastAgentSessionIDs []string       `json:"past_agent_session_ids,omitempty"`
 	History             []HistoryEntry `json:"history"`
+	CommandHistory      []string       `json:"command_history,omitempty"`
 	CreatedAt           time.Time      `json:"created_at"`
 	UpdatedAt           time.Time      `json:"updated_at"`
 
@@ -72,6 +73,26 @@ func (s *Session) AddHistory(role, content string) {
 		Content:   content,
 		Timestamp: time.Now(),
 	})
+}
+
+const maxCommandHistory = 20
+
+func (s *Session) RecordCommand(cmd string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.CommandHistory = append(s.CommandHistory, cmd)
+	if len(s.CommandHistory) > maxCommandHistory {
+		s.CommandHistory = s.CommandHistory[len(s.CommandHistory)-maxCommandHistory:]
+	}
+}
+
+func (s *Session) Duration() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.CreatedAt.IsZero() {
+		return 0
+	}
+	return time.Since(s.CreatedAt)
 }
 
 // recordPastAgentSessionID saves the current AgentSessionID to PastAgentSessionIDs
@@ -283,6 +304,19 @@ func (sm *SessionManager) GetOrCreateActive(userKey string) *Session {
 	s := sm.createLocked(userKey, "default")
 	sm.saveLocked()
 	return s
+}
+
+// GetActive returns the active session for userKey without creating one.
+// Returns nil if no active session exists.
+func (sm *SessionManager) GetActive(userKey string) *Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if sid, ok := sm.activeSession[userKey]; ok {
+		if s, ok := sm.sessions[sid]; ok {
+			return s
+		}
+	}
+	return nil
 }
 
 func (sm *SessionManager) NewSession(userKey, name string) *Session {

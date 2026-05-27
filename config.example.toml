@@ -264,6 +264,41 @@ level = "info" # debug, info, warn, error
 # max_tokens = 12000     # estimated token threshold to trigger compression
 # min_gap_mins = 30      # minimum minutes between auto-compress runs (default 30)
 
+# 当 agent 回复被检测为未完成时，自动发送 follow-up 或通知用户。
+# Auto-continue: detect incomplete agent turns and optionally send follow-up.
+#
+# [projects.auto_continue]
+# enabled = true
+# mode = "auto"              # "auto" = send follow-up to agent; "notify" = inform user only
+# max_rounds = 3             # cap on consecutive auto-continues per user message
+# cooldown_secs = 5          # delay between rounds
+# prompt = "Please continue the task from where you left off."
+#
+# [projects.auto_continue.rules]
+# # Patterns indicating task is INCOMPLETE (triggers continue)
+# keywords = [
+#   "后续待补充", "还没完成", "尚未完成",
+#   "下一步[：:]", "待(实现|完善|优化)", "剩余.*任务",
+#   "I('ll| will) (continue|need to|work on|implement|fix)",
+#   "remaining (task|step|item|work)",
+#   "not yet (done|complete|finish)",
+#   "still need(s?) to", "TODO[: ]",
+#   "next step[s]?:",
+#   "haven't (yet |finish|complete)",
+# ]
+# # Patterns indicating COMPLETE or ASKING USER (blocks continue)
+# keywords_complete = [
+#   "全部完成", "已完成", "所有测试通过", "零失败",
+#   "All (test|check)s pass", "Build passes",
+#   "zero (fail|regression)", "successfully (completed|implemented|applied)",
+#   "✅", "全部通过",
+#   "你想怎么处理", "请提供", "要我.*吗[？?]",
+#   "would you like", "shall I", "let me know",
+#   "please (provide|share|confirm)",
+# ]
+# llm_fallback = true        # use LLM when keyword rules are inconclusive
+# llm_model = "haiku"
+
 # [projects.observe]
 # enabled = true                    # Forward native terminal sessions to Slack
 # channel = "C0AL13PN4BG"           # Slack channel ID to post observations to

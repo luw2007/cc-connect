@@ -165,6 +165,35 @@ func (m *WorkspaceBindingManager) ListByProject(projectKey string) map[string]*W
 	return result
 }
 
+// WorkspaceBindingMatch represents a binding found via reverse lookup.
+type WorkspaceBindingMatch struct {
+	ProjectKey string
+	ChannelKey string
+	Binding    *WorkspaceBinding
+}
+
+// LookupByWorkspace returns all channel bindings that point to the given workspace path.
+func (m *WorkspaceBindingManager) LookupByWorkspace(workspace string) []WorkspaceBindingMatch {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshLocked()
+
+	normalized := normalizeWorkspacePath(workspace)
+	var matches []WorkspaceBindingMatch
+	for projectKey, proj := range m.bindings {
+		for channelKey, binding := range proj {
+			if binding.Workspace == normalized {
+				matches = append(matches, WorkspaceBindingMatch{
+					ProjectKey: projectKey,
+					ChannelKey: channelKey,
+					Binding:    binding,
+				})
+			}
+		}
+	}
+	return matches
+}
+
 func (m *WorkspaceBindingManager) saveLocked() {
 	if m.storePath == "" {
 		return

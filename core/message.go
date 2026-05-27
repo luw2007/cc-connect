@@ -244,4 +244,5 @@ type AgentSessionInfo struct {
 	MessageCount int
 	ModifiedAt   time.Time
 	GitBranch    string
+	ProjectPath  string
 }

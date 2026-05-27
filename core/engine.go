@@ -232,6 +232,15 @@ type Engine struct {
 	autoCompressMinGap    time.Duration
 	resetOnIdle           time.Duration
 
+	// Auto-continue settings
+	autoContinueEnabled   bool
+	autoContinueMode      string
+	autoContinueMaxRounds int
+	autoContinueCooldown  time.Duration
+	autoContinuePrompt    string
+	autoContinueRules     *AutoContinueDetector
+	llmJudger             LLMJudger
+
 	// When true, append [ctx: ~N%] (or model self-report) to assistant replies shown on platforms.
 	showContextIndicator bool
 	replyFooterEnabled   bool
@@ -261,6 +270,14 @@ type Engine struct {
 	interactiveMu     sync.Mutex
 	interactiveStates map[string]*interactiveState // key = sessionKey
 
+	// /watch command: per-session card refresh loops
+	watchMu     sync.Mutex
+	watchStates map[string]*watchState
+
+	// Control console: separate thread with terminal control card
+	controlCardMu     sync.Mutex
+	controlCardMsgIDs map[string]string // sessionKey → card message_id in control thread
+
 	platformLifecycleMu sync.Mutex
 	platformReady       map[Platform]bool
 	stopping            bool
@@ -273,6 +290,19 @@ type Engine struct {
 
 	// Data directory for socket path injection
 	dataDir string
+
+	// Group chat sequential naming
+	groupSeqMu sync.Mutex
+	groupSeqs  map[string]int // userID → next seq
+
+	// Per-session mute
+	mutedSessions sync.Map // sessionKey → struct{}
+
+	// External hook permissions (from POST /hook/permission)
+	externalPermMu      sync.Mutex
+	externalPermissions map[string]*externalPendingPermission
+
+	memoryExtractor *MemoryExtractor
 }
 
 // workspaceInitFlow tracks a channel that is being onboarded to a workspace.
@@ -322,6 +352,7 @@ type interactiveState struct {
 	pendingProviderAdd     *pendingProviderAddState
 	lastAutoCompressAt     time.Time
 	lastAutoCompressTokens int
+	autoContinueRound      int
 
 	// Unsolicited event reader: a background goroutine that consumes agent
 	// events between user-initiated turns (e.g. background task completions).
@@ -425,6 +456,10 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		skills:                NewSkillRegistry(),
 		aliases:               make(map[string]string),
 		interactiveStates:     make(map[string]*interactiveState),
+		watchStates:           make(map[string]*watchState),
+		controlCardMsgIDs:     make(map[string]string),
+		groupSeqs:             make(map[string]int),
+		externalPermissions:   make(map[string]*externalPendingPermission),
 		platformReady:         make(map[Platform]bool),
 		startedAt:             time.Now(),
 		streamPreview:         DefaultStreamPreviewCfg(),
@@ -594,6 +629,76 @@ func (e *Engine) SetAutoCompressConfig(enabled bool, maxTokens int, minGap time.
 	e.autoCompressMinGap = minGap
 }
 
+// AutoContinueCfg is the runtime config for auto-continue behavior.
+type AutoContinueCfg struct {
+	Enabled   bool
+	Mode      string
+	MaxRounds int
+	Cooldown  time.Duration
+	Prompt    string
+	Detector  *AutoContinueDetector
+}
+
+// SetAutoContinueConfig configures automatic turn continuation detection.
+func (e *Engine) SetAutoContinueConfig(cfg AutoContinueCfg) {
+	e.autoContinueEnabled = cfg.Enabled
+	e.autoContinueMode = cfg.Mode
+	if e.autoContinueMode == "" {
+		e.autoContinueMode = "auto"
+	}
+	e.autoContinueMaxRounds = cfg.MaxRounds
+	if e.autoContinueMaxRounds <= 0 {
+		e.autoContinueMaxRounds = 3
+	}
+	e.autoContinueCooldown = cfg.Cooldown
+	if e.autoContinueCooldown <= 0 {
+		e.autoContinueCooldown = 5 * time.Second
+	}
+	e.autoContinuePrompt = cfg.Prompt
+	if e.autoContinuePrompt == "" {
+		e.autoContinuePrompt = "Please continue the task from where you left off."
+	}
+	e.autoContinueRules = cfg.Detector
+}
+
+// SetLLMJudger sets the LLM-based completion judger for auto-continue.
+func (e *Engine) SetLLMJudger(j LLMJudger) {
+	e.llmJudger = j
+}
+
+func (e *Engine) evaluateAutoContinue(ctx context.Context, response string, sessionKey string) bool {
+	if e.autoContinueRules == nil {
+		return false
+	}
+	status := e.autoContinueRules.Detect(response)
+	switch status {
+	case CompletionComplete:
+		slog.Debug("auto-continue: response detected as complete", "session", sessionKey)
+		return false
+	case CompletionIncomplete:
+		slog.Info("auto-continue: response detected as incomplete", "session", sessionKey)
+		return true
+	case CompletionInconclusive:
+		if !e.autoContinueRules.NeedsLLMFallback() {
+			return false
+		}
+		if e.llmJudger == nil {
+			slog.Warn("auto-continue: LLM fallback requested but no judger configured", "session", sessionKey)
+			return false
+		}
+		provider, model := e.autoContinueRules.LLMConfig()
+		judgeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		complete, err := e.llmJudger.JudgeCompletion(judgeCtx, response, provider, model)
+		if err != nil {
+			slog.Error("auto-continue: LLM judgment failed", "error", err, "session", sessionKey)
+			return false
+		}
+		return !complete
+	}
+	return false
+}
+
 // SetResetOnIdle configures automatic session rotation after prolonged inactivity.
 // A zero or negative duration disables the behavior.
 func (e *Engine) SetResetOnIdle(d time.Duration) {
@@ -629,6 +734,7 @@ func (e *Engine) SetSkipGit(skipGit bool) {
 	e.skipGit = skipGit
 }
 
+func (e *Engine) SetMemoryExtractor(me *MemoryExtractor) { e.memoryExtractor = me }
 
 // SetInjectSender controls whether sender identity (platform and user ID) is
 // prepended to each message before forwarding it to the agent. When enabled,
@@ -1197,7 +1303,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 			iKey = workspaceDir + ":" + iKey
 		}
 		prevHistLen := session.HistoryLen()
-		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
+		e.processInteractiveMessageWith(e.ctx, effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
 		e.cleanupInteractiveState(iKey)
 		// Empty-response detection via session history delta: processInteractiveMessageWith
 		// always adds a "user" entry (prevHistLen+1), then an "assistant" entry on success
@@ -1220,7 +1326,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		iKey = workspaceDir + ":" + sessionKey
 	}
 	prevHistLen := session.HistoryLen()
-	e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
+	e.processInteractiveMessageWith(e.ctx, effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
 	// Same empty-response detection as the useNewSession path above.
 	if !job.Mute && session.HistoryLen() < prevHistLen+2 {
 		return fmt.Errorf("cron job %q produced an empty response", job.ID)
@@ -1560,7 +1666,32 @@ func (e *Engine) Start() error {
 	}
 
 	e.startObserver()
+	e.startExternalPermissionCleanup()
 	return nil
+}
+
+func (e *Engine) startExternalPermissionCleanup() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case <-ticker.C:
+				e.externalPermMu.Lock()
+				cutoff := time.Now().Add(-(defaultPermissionTimeout + 30*time.Second))
+				for id, ep := range e.externalPermissions {
+					if ep.CreatedAt.Before(cutoff) {
+						ep.resolve(&ExternalPermDecision{Behavior: "deny", Message: "expired"})
+						delete(e.externalPermissions, id)
+						slog.Warn("external permission expired", "request_id", id, "tool", ep.ToolName)
+					}
+				}
+				e.externalPermMu.Unlock()
+			}
+		}
+	}()
 }
 
 func (e *Engine) Stop() error {
@@ -1909,9 +2040,18 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		return
 	}
 
-	slog.Info("message received",
-		"platform", msg.Platform, "msg_id", msg.MessageID,
-		"session", msg.SessionKey, "user", msg.UserName,
+	// Auto-unmute when user sends a message
+	e.mutedSessions.Delete(msg.SessionKey)
+
+	ctx := WithTrace(context.Background(), TraceContext{
+		SessionKey: msg.SessionKey,
+		Platform:   msg.Platform,
+		UserID:     msg.UserID,
+		MsgID:      msg.MessageID,
+	})
+
+	Tlog(ctx).Info("message received",
+		"user", msg.UserName,
 		"content_len", len(msg.Content),
 		"has_images", len(msg.Images) > 0, "has_audio", msg.Audio != nil, "has_files", len(msg.Files) > 0,
 	)
@@ -2133,13 +2273,12 @@ sessionLocked:
 	// instead of dropped (issue #565).
 	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx)
 
-	slog.Info("processing message",
-		"platform", msg.Platform,
+	Tlog(ctx).Info("processing message",
 		"user", msg.UserName,
 		"session", session.ID,
 	)
 
-	go e.processInteractiveMessageWith(p, msg, session, agent, sessions, interactiveKey, resolvedWorkspace, msg.SessionKey)
+	go e.processInteractiveMessageWith(ctx, p, msg, session, agent, sessions, interactiveKey, resolvedWorkspace, msg.SessionKey)
 }
 
 func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions *SessionManager, interactiveKey string, session *Session) *Session {
@@ -2353,6 +2492,16 @@ func (e *Engine) handleVoiceMessage(p Platform, msg *Message) {
 // ──────────────────────────────────────────────────────────────
 
 func (e *Engine) handlePendingPermission(p Platform, msg *Message, content string, interactiveKey string) bool {
+	if e.resolveExternalPermission(msg.SessionKey, content) {
+		lower := strings.ToLower(strings.TrimSpace(content))
+		if isDenyResponse(lower) {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPermissionDenied))
+		} else {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPermissionAllowed))
+		}
+		return true
+	}
+
 	iKey := interactiveKey
 	if iKey == "" {
 		iKey = e.interactiveKeyForSessionKey(msg.SessionKey)
@@ -2555,14 +2704,14 @@ func isDenyResponse(s string) bool {
 // ──────────────────────────────────────────────────────────────
 
 func (e *Engine) processInteractiveMessage(p Platform, msg *Message, session *Session) {
-	e.processInteractiveMessageWith(p, msg, session, e.agent, e.sessions, msg.SessionKey, "", "")
+	e.processInteractiveMessageWith(e.ctx, p, msg, session, e.agent, e.sessions, msg.SessionKey, "", "")
 }
 
 // processInteractiveMessageWith is the core interactive processing loop.
 // It accepts an explicit agent, interactiveKey (for the interactiveStates map),
 // and workspaceDir so that multi-workspace mode can route to per-workspace agents.
 // ccSessionKey, when non-empty, is used for CC_SESSION_KEY in the agent env; otherwise interactiveKey is used.
-func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session *Session, agent Agent, sessions *SessionManager, interactiveKey string, workspaceDir string, ccSessionKey string) {
+func (e *Engine) processInteractiveMessageWith(ctx context.Context, p Platform, msg *Message, session *Session, agent Agent, sessions *SessionManager, interactiveKey string, workspaceDir string, ccSessionKey string) {
 	// session.Unlock() is NOT deferred here — it is called explicitly in
 	// the drain loop below while holding state.mu to close the race window
 	// between "queue is empty" and "session unlocked". A deferred fallback
@@ -2678,9 +2827,9 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		sendDone <- state.agentSession.Send(promptContent, msg.Images, msg.Files)
 	}()
 
-	e.processInteractiveEvents(state, session, sessions, interactiveKey, msg.MessageID, turnStart, stopTyping, sendDone, msg.ReplyCtx)
+	e.processInteractiveEvents(ctx, state, session, sessions, interactiveKey, msg.MessageID, turnStart, stopTyping, sendDone, msg.ReplyCtx)
 	if elapsed := time.Since(sendStart); elapsed >= slowAgentSend {
-		slog.Warn("slow agent send", "elapsed", elapsed, "session", msg.SessionKey, "content_len", len(msg.Content))
+		Tlog(ctx).Warn("slow agent send", "elapsed", elapsed, "content_len", len(msg.Content))
 	}
 	stopTyping = nil // ownership transferred; prevent defer from double-stopping
 
@@ -3432,12 +3581,17 @@ var agentErrorHandlers = []agentErrorHandler{
 	{"Session not found", MsgSessionNotFound},
 }
 
-func (e *Engine) processInteractiveEvents(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string, msgID string, turnStart time.Time, stopTypingFn func(), sendDone <-chan error, replyCtx any) {
+func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiveState, session *Session, sessions *SessionManager, sessionKey string, msgID string, turnStart time.Time, stopTypingFn func(), sendDone <-chan error, replyCtx any) {
 	if msgID != "" {
 		state.mu.Lock()
 		state.currentMessageID = msgID
 		state.mu.Unlock()
 	}
+
+	// Reset auto-continue counter on real user message.
+	state.mu.Lock()
+	state.autoContinueRound = 0
+	state.mu.Unlock()
 
 	var textParts []string
 	var segmentStart int // index into textParts: text before this has been sent/displayed
@@ -3478,9 +3632,15 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		return e.renderOutgoingContentForWorkspace(state.platform, content, workspaceDir)
 	}
 	sendWorkspace := func(p Platform, replyCtx any, content string) {
+		if _, muted := e.mutedSessions.Load(sessionKey); muted {
+			return
+		}
 		e.sendForWorkspace(p, replyCtx, content, workspaceDir)
 	}
 	sendWorkspaceWithError := func(p Platform, replyCtx any, content string) error {
+		if _, muted := e.mutedSessions.Load(sessionKey); muted {
+			return nil
+		}
 		return e.sendWithErrorForWorkspace(p, replyCtx, content, workspaceDir)
 	}
 
@@ -3539,7 +3699,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		case err := <-pendingSend:
 			pendingSend = nil
 			if err != nil {
-				slog.Error("failed to send prompt", "error", err, "session_key", sessionKey)
+				Tlog(ctx).Error("failed to send prompt", "error", err)
 				sp.discard()
 				if stopTyping != nil {
 					stopTyping()
@@ -3557,8 +3717,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 			continue
 		case <-idleCh:
-			slog.Error("agent session idle timeout: no events for too long, killing session",
-				"session_key", sessionKey, "timeout", e.eventIdleTimeout, "elapsed", time.Since(turnStart))
+			Tlog(ctx).Error("agent session idle timeout: no events for too long, killing session",
+				"timeout", e.eventIdleTimeout, "elapsed", time.Since(turnStart))
 			cp.Finalize(ProgressCardStateFailed)
 			sp.discard()
 			state.mu.Lock()
@@ -3597,7 +3757,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		if !firstEventLogged {
 			firstEventLogged = true
 			if elapsed := time.Since(waitStart); elapsed >= slowAgentFirstEvent {
-				slog.Warn("slow agent first event", "elapsed", elapsed, "session", sessionKey, "event_type", event.Type)
+				Tlog(ctx).Warn("slow agent first event", "elapsed", elapsed, "event_type", event.Type)
 			}
 		}
 
@@ -3810,22 +3970,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					sp.detachPreview() // keep frozen preview visible as permanent message
 				}
 				toolInput := event.ToolInput
-				var formattedInput string
-				if toolInput == "" {
-					formattedInput = ""
-				} else if strings.Contains(toolInput, "```") {
-					formattedInput = toolInput
-				} else if strings.Contains(toolInput, "\n") || utf8.RuneCountInString(toolInput) > 200 {
-					lang := toolCodeLang(event.ToolName, toolInput)
-					formattedInput = fmt.Sprintf("```%s\n%s\n```", lang, toolInput)
-				} else {
-					switch event.ToolName {
-					case "shell", "run_shell_command", "Bash":
-						formattedInput = fmt.Sprintf("```bash\n%s\n```", toolInput)
-					default:
-						formattedInput = fmt.Sprintf("`%s`", toolInput)
-					}
-				}
+				formattedInput := formatToolInput(event.ToolName, toolInput, event.ToolInputRaw)
 				toolMsg := fmt.Sprintf(e.i18n.T(MsgTool), toolCount, event.ToolName, formattedInput)
 				if !cp.AppendEvent(ProgressEntryToolUse, toolInput, event.ToolName, toolMsg) {
 					for _, chunk := range SplitMessageCodeFenceAware(toolMsg, maxPlatformMessageLen) {
@@ -3986,7 +4131,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				sp.detachPreview() // keep frozen preview visible as permanent message
 			}
 
-			slog.Info("permission request",
+			Tlog(ctx).Info("permission request",
 				"request_id", event.RequestID,
 				"tool", event.ToolName,
 			)
@@ -4023,7 +4168,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 			<-pending.Resolved
-			slog.Info("permission resolved", "request_id", event.RequestID)
+			Tlog(ctx).Info("permission resolved", "request_id", event.RequestID)
 
 			// Restart idle timer after permission is resolved
 			if idleTimer != nil {
@@ -4143,8 +4288,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			fullResponse = cleanResponse
 
 			turnDuration := time.Since(turnStart)
-			slog.Info("turn complete",
-				"session", session.ID,
+			Tlog(ctx).Info("turn complete",
 				"agent_session", session.GetAgentSessionID(),
 				"msg_id", msgID,
 				"tools", toolCount,
@@ -4154,6 +4298,20 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				"output_tokens", event.OutputTokens,
 				"silent", isSilent,
 			)
+
+			e.hooks.Emit(HookEvent{
+				Event:      HookEventTurnCompleted,
+				SessionKey: sessionKey,
+				Platform:   p.Name(),
+				Content:    baseResponse,
+				Extra: map[string]any{
+					"tool_count":    toolCount,
+					"turn_duration": turnDuration.String(),
+					"silent":        isSilent,
+					"input_tokens":  event.InputTokens,
+					"output_tokens": event.OutputTokens,
+				},
+			})
 
 			normalizedBaseResponse := strings.TrimSpace(baseResponse)
 			state.mu.Lock()
@@ -4298,6 +4456,79 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					// Run compress inline while the session is still locked.
 					e.runCompress(state, session, sessions, sessionKey, state.platform, state.replyCtx, true)
 					return
+				}
+			}
+
+			// Auto-continue: detect incomplete turns and optionally send follow-up.
+			if e.autoContinueEnabled && !isSilent && !triggerAutoCompress {
+				state.mu.Lock()
+				round := state.autoContinueRound
+				hasPending := len(state.pendingMessages) > 0
+				state.mu.Unlock()
+
+				if !hasPending && round < e.autoContinueMaxRounds {
+					if e.evaluateAutoContinue(ctx, baseResponse, sessionKey) {
+						state.mu.Lock()
+						state.autoContinueRound++
+						currentRound := state.autoContinueRound
+						state.mu.Unlock()
+
+						switch e.autoContinueMode {
+						case "auto":
+							slog.Info("auto-continue: scheduling follow-up",
+								"session", sessionKey, "round", currentRound, "cooldown", e.autoContinueCooldown)
+
+							e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgAutoContinuing), currentRound, e.autoContinueMaxRounds))
+
+							time.Sleep(e.autoContinueCooldown)
+
+							state.mu.Lock()
+							newPending := len(state.pendingMessages) > 0
+							state.mu.Unlock()
+							if newPending || state.agentSession == nil || !state.agentSession.Alive() {
+								break
+							}
+
+							drainEvents(state.agentSession.Events())
+
+							if pendingSend != nil {
+								if err := <-pendingSend; err != nil {
+									slog.Debug("async send error before auto-continue", "error", err)
+								}
+							}
+
+							session.AddHistory("user", e.autoContinuePrompt)
+							nextSend := make(chan error, 1)
+							go func() {
+								nextSend <- state.agentSession.Send(e.autoContinuePrompt, nil, nil)
+							}()
+							pendingSend = nextSend
+
+							msgID = fmt.Sprintf("auto-continue-%d", currentRound)
+							textParts = nil
+							segmentStart = 0
+							toolCount = 0
+							turnStart = time.Now()
+							firstEventLogged = false
+							waitStart = time.Now()
+							triggerAutoCompress = false
+
+							acRenderer := func(content string) string {
+								return e.renderOutgoingContentForWorkspace(p, content, workspaceDir)
+							}
+							sp = newStreamPreview(e.streamPreview, p, replyCtx, e.ctx, acRenderer)
+							cp = newCompactProgressWriter(e.ctx, p, replyCtx, e.agent.Name(), e.i18n.CurrentLang(), acRenderer)
+							streamCard = nil
+							cardToolCalls = nil
+							cardThinkingText = ""
+							cardAnswerText.Reset()
+
+							continue
+
+						case "notify":
+							e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgAutoContinueNotify), currentRound))
+						}
+					}
 				}
 			}
 
@@ -4448,7 +4679,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 			if event.Error != nil {
 				errMsg := event.Error.Error()
-				slog.Error("agent error", "error", event.Error)
+				Tlog(ctx).Error("agent error", "error", event.Error)
 				e.hooks.Emit(HookEvent{
 					Event:      HookEventError,
 					SessionKey: sessionKey,
@@ -4476,7 +4707,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 channelClosed:
 	// Channel closed - process exited unexpectedly
-	slog.Warn("agent process exited", "session_key", sessionKey)
+	Tlog(ctx).Warn("agent process exited")
 	state.mu.Lock()
 	state.eventsNeedResync = true
 	state.mu.Unlock()
@@ -4637,8 +4868,14 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 			stopTyping = ti.StartTyping(e.ctx, queued.replyCtx)
 		}
 
-		slog.Info("processing queued message", "session", sessionKey)
-		e.processInteractiveEvents(state, session, sessions, sessionKey, queued.messageID, time.Now(), stopTyping, sendDone, queued.replyCtx)
+		qctx := WithTrace(context.Background(), TraceContext{
+			SessionKey: sessionKey,
+			Platform:   queued.msgPlatform,
+			UserID:     queued.userID,
+			MsgID:      queued.messageID,
+		})
+		Tlog(qctx).Info("processing queued message")
+		e.processInteractiveEvents(qctx, state, session, sessions, sessionKey, queued.messageID, time.Now(), stopTyping, sendDone, queued.replyCtx)
 	}
 }
 
@@ -4693,6 +4930,20 @@ var builtinCommands = []struct {
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
+	{[]string{"watch", "monitor"}, "watch"},
+	{[]string{"export"}, "export"},
+	{[]string{"notes", "note", "memory", "memories"}, "notes"},
+	{[]string{"attach"}, "attach"},
+	{[]string{"clear"}, "clear"},
+	{[]string{"groups"}, "groups"},
+	{[]string{"mute"}, "mute"},
+	{[]string{"unmute"}, "unmute"},
+	{[]string{"terminal", "term"}, "terminal"},
+	{[]string{"info"}, "info"},
+	{[]string{"y", "yes"}, "y"},
+	{[]string{"n", "no"}, "n"},
+	{[]string{"cc", "ctrlc"}, "cc"},
+	{[]string{"esc", "escape"}, "esc"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
@@ -4816,6 +5067,12 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		slog.Info("audit: command_executed",
 			"user_id", msg.UserID, "platform", msg.Platform,
 			"project", e.name, "command", cmdID)
+		// Record command in session history
+		if _, sessions := e.sessionContextForKey(msg.SessionKey); sessions != nil {
+			if s := sessions.GetActive(msg.SessionKey); s != nil {
+				s.RecordCommand("/" + cmdID + " " + strings.Join(args, " "))
+			}
+		}
 	}
 
 	switch cmdID {
@@ -4908,6 +5165,34 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdWeb(p, msg, args)
 	case "ps":
 		e.cmdPs(p, msg, args)
+	case "watch":
+		e.cmdWatch(p, msg, args)
+	case "export":
+		e.cmdExport(p, msg, args)
+	case "notes":
+		e.cmdNotes(p, msg, args)
+	case "attach":
+		e.cmdAttach(p, msg, args)
+	case "clear":
+		e.cmdClear(p, msg, args)
+	case "groups":
+		e.cmdGroups(p, msg, args)
+	case "mute":
+		e.cmdMute(p, msg, args)
+	case "unmute":
+		e.cmdUnmute(p, msg, args)
+	case "terminal":
+		e.cmdTerminal(p, msg)
+	case "info":
+		e.cmdInfo(p, msg)
+	case "y":
+		e.injectKeyForSession(msg.SessionKey, "y")
+	case "n":
+		e.injectKeyForSession(msg.SessionKey, "n")
+	case "cc":
+		e.injectKeyForSession(msg.SessionKey, "C-c")
+	case "esc":
+		e.injectKeyForSession(msg.SessionKey, "Escape")
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
 			if disabledCmds[strings.ToLower(custom.Name)] {
@@ -4996,6 +5281,7 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 
 		normalizedPath := normalizeWorkspacePath(routePath)
 		e.workspaceBindings.Bind(bindingKey, channelKey, resolveChannelName(), normalizedPath)
+		go e.renameGroupChat(msg.SessionKey, "[CC]"+filepath.Base(normalizedPath))
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(successKey, normalizedPath))
 		return true
 	}
@@ -5251,13 +5537,34 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 		return
 	}
 
+	showAll := false
+	var pageArgs []string
+	for _, a := range args {
+		if strings.EqualFold(a, "all") {
+			showAll = true
+		} else {
+			pageArgs = append(pageArgs, a)
+		}
+	}
+
 	if !supportsCards(p) {
-		agentSessions, err := agent.ListSessions(e.ctx)
+		var agentSessions []AgentSessionInfo
+		if showAll {
+			if lister, ok := agent.(AllSessionsLister); ok {
+				agentSessions, err = lister.ListAllSessions(e.ctx)
+			} else {
+				agentSessions, err = agent.ListSessions(e.ctx)
+			}
+		} else {
+			agentSessions, err = agent.ListSessions(e.ctx)
+			if err == nil {
+				agentSessions = e.applySessionFilter(agentSessions, sessions)
+			}
+		}
 		if err != nil {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgListError), err))
 			return
 		}
-		agentSessions = e.applySessionFilter(agentSessions, sessions)
 		if len(agentSessions) == 0 {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgListEmpty))
 			return
@@ -5267,8 +5574,8 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 		totalPages := (total + listPageSize - 1) / listPageSize
 
 		page := 1
-		if len(args) > 0 {
-			if n, err := strconv.Atoi(args[0]); err == nil && n > 0 {
+		if len(pageArgs) > 0 {
+			if n, err := strconv.Atoi(pageArgs[0]); err == nil && n > 0 {
 				page = n
 			}
 		}
@@ -5323,12 +5630,12 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 	}
 
 	page := 1
-	if len(args) > 0 {
-		if n, err := strconv.Atoi(args[0]); err == nil && n > 0 {
+	if len(pageArgs) > 0 {
+		if n, err := strconv.Atoi(pageArgs[0]); err == nil && n > 0 {
 			page = n
 		}
 	}
-	card, err := e.renderListCard(msg.SessionKey, page)
+	card, err := e.renderListCard(msg.SessionKey, page, showAll)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, err.Error())
 		return
@@ -5377,8 +5684,254 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 	if displayName == "" {
 		displayName = matched.Summary
 	}
+	go e.renameGroupChatWithDir(msg.SessionKey, agent, displayName)
 	e.reply(p, msg.ReplyCtx,
 		e.i18n.Tf(MsgSwitchSuccess, displayName, shortID, matched.MessageCount))
+
+	if agentSID := session.GetAgentSessionID(); agentSID != "" {
+		if hp, ok := agent.(HistoryProvider); ok {
+			if history, err := hp.GetSessionHistory(e.ctx, agentSID, 10); err == nil && len(history) > 0 {
+				var lines []string
+				for _, entry := range history {
+					content := entry.Content
+					if len([]rune(content)) > 80 {
+						content = string([]rune(content)[:80]) + "..."
+					}
+					icon := "👤"
+					if entry.Role == "assistant" {
+						icon = "🤖"
+					}
+					ts := ""
+					if !entry.Timestamp.IsZero() {
+						ts = entry.Timestamp.Format("[15:04]") + " "
+					}
+					lines = append(lines, fmt.Sprintf("%s %s%s", icon, ts, content))
+				}
+				e.reply(p, msg.ReplyCtx, "📜 Recent:\n\n"+strings.Join(lines, "\n"))
+			}
+		}
+	}
+}
+
+func (e *Engine) cmdTerminal(p Platform, msg *Message) {
+	iKey := e.interactiveKeyForSessionKey(msg.SessionKey)
+	e.interactiveMu.Lock()
+	state := e.interactiveStates[iKey]
+	e.interactiveMu.Unlock()
+
+	var agentName string
+	if a := e.agent; a != nil {
+		agentName = a.Name()
+	}
+	project := e.name
+
+	hasTerminal := state != nil && state.agentSession != nil
+	var status SessionCardStatus
+	if hasTerminal {
+		_, sessions := e.sessionContextForKey(msg.SessionKey)
+		sess := sessions.GetOrCreateActive(msg.SessionKey)
+		if sess.Busy() {
+			status = SessionStatusRunning
+		} else {
+			status = SessionStatusWaiting
+		}
+		_, canAttach := state.agentSession.(TerminalAttacher)
+		hasTerminal = canAttach
+	} else {
+		status = SessionStatusDone
+	}
+
+	card := RenderSessionActionCard(e.i18n, agentName, project, status, hasTerminal, KbPageBasic)
+	e.replyWithCard(p, msg.ReplyCtx, card)
+}
+
+func (e *Engine) cmdAttach(p Platform, msg *Message, args []string) {
+	if len(args) == 0 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgAttachUsage))
+		return
+	}
+	query := strings.TrimSpace(strings.Join(args, " "))
+	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
+		return
+	}
+	agentSessions, err := agent.ListSessions(e.ctx)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
+		return
+	}
+	agentSessions = e.applySessionFilter(agentSessions, sessions)
+	matched := e.matchSession(agentSessions, sessions, query)
+	if matched == nil {
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgSwitchNoMatch), query))
+		return
+	}
+	e.cleanupInteractiveState(interactiveKey)
+	session := sessions.SwitchToAgentSession(msg.SessionKey, matched.ID, agent.Name(), matched.Summary)
+	session.ClearHistory()
+
+	displayName := sessions.GetSessionName(matched.ID)
+	if displayName == "" {
+		displayName = matched.Summary
+	}
+	shortID := matched.ID
+	if len(shortID) > 12 {
+		shortID = shortID[:12]
+	}
+	go e.renameGroupChatWithDir(msg.SessionKey, agent, displayName)
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgAttachSuccess, displayName, shortID))
+}
+
+func (e *Engine) cmdClear(p Platform, msg *Message, _ []string) {
+	_, sessions, interactiveKey, err := e.commandContext(p, msg)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
+		return
+	}
+	e.cleanupInteractiveState(interactiveKey)
+	s := sessions.NewSession(msg.SessionKey, "")
+	s.ClearHistory()
+	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgClearSuccess))
+}
+
+func (e *Engine) cmdMute(p Platform, msg *Message, _ []string) {
+	e.mutedSessions.Store(msg.SessionKey, struct{}{})
+	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgMuted))
+}
+
+func (e *Engine) cmdUnmute(p Platform, msg *Message, _ []string) {
+	e.mutedSessions.Delete(msg.SessionKey)
+	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgUnmuted))
+}
+
+func (e *Engine) cmdGroups(p Platform, msg *Message, args []string) {
+	if !e.multiWorkspace || e.workspaceBindings == nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgGroupsEmpty))
+		return
+	}
+
+	if len(args) > 0 && strings.EqualFold(args[0], "dissolve") && len(args) > 1 {
+		e.dissolveGroup(p, msg, strings.Join(args[1:], " "))
+		return
+	}
+
+	bindings := e.workspaceBindings.ListByProject(e.name)
+	type groupInfo struct {
+		channelKey  string
+		channelName string
+		workspace   string
+		chatID      string
+	}
+	var groups []groupInfo
+	platformName := extractPlatformName(msg.SessionKey)
+	for ck, wb := range bindings {
+		if !strings.HasPrefix(wb.ChannelName, "[CC]") {
+			continue
+		}
+		chatID := ck
+		if idx := strings.Index(ck, ":"); idx >= 0 {
+			chatID = ck[idx+1:]
+		}
+		groups = append(groups, groupInfo{
+			channelKey:  ck,
+			channelName: wb.ChannelName,
+			workspace:   wb.Workspace,
+			chatID:      chatID,
+		})
+	}
+	if len(groups) == 0 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgGroupsEmpty))
+		return
+	}
+
+	cb := NewCard().Title(fmt.Sprintf(e.i18n.T(MsgGroupsTitle), len(groups)), "blue")
+	for _, g := range groups {
+		dissolveAction := fmt.Sprintf("act:/groups dissolve %s:%s", platformName, g.chatID)
+		cb.ListItemBtn(
+			fmt.Sprintf("**%s**\n`%s`", g.channelName, g.workspace),
+			e.i18n.T(MsgGroupDissolveBtn), "danger", dissolveAction,
+		)
+	}
+	card := cb.Build()
+	if cs, ok := p.(CardSender); ok {
+		cs.SendCard(e.ctx, msg.ReplyCtx, card)
+	} else {
+		e.reply(p, msg.ReplyCtx, card.RenderText())
+	}
+}
+
+func (e *Engine) dissolveGroup(p Platform, msg *Message, target string) {
+	dissolver, ok := p.(GroupChatDissolver)
+	if !ok {
+		return
+	}
+	chatID := target
+	if idx := strings.Index(target, ":"); idx >= 0 {
+		chatID = target[idx+1:]
+	}
+	if err := dissolver.DissolveGroupChat(e.ctx, chatID); err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgGroupDissolveErr, err))
+		return
+	}
+	if e.workspaceBindings != nil {
+		platformName := extractPlatformName(msg.SessionKey)
+		ck := workspaceChannelKey(platformName, chatID)
+		e.workspaceBindings.Unbind(e.name, ck)
+	}
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgGroupDissolved, chatID))
+}
+
+func (e *Engine) renderDirBrowserCard(sessionKey, path string) *Card {
+	if path == "" {
+		path = "~"
+	}
+	if path == "~" {
+		if h, err := os.UserHomeDir(); err == nil {
+			path = h
+		}
+	}
+	lister, ok := e.agent.(DirectoryLister)
+	if !ok {
+		return NewCard().Title("Directory Browser", "blue").
+			Markdown("Agent does not support directory browsing.").Build()
+	}
+	entries, err := lister.ListDirectory(e.ctx, path)
+	if err != nil {
+		return NewCard().Title("Directory Browser", "red").
+			Markdown(fmt.Sprintf("Error: %s", err)).Build()
+	}
+
+	cb := NewCard().Title(fmt.Sprintf(e.i18n.T(MsgDirBrowserTitle), filepath.Base(path)), "blue").
+		Note(path)
+
+	var btns []CardButton
+	parent := filepath.Dir(path)
+	if parent != path {
+		btns = append(btns, DefaultBtn(e.i18n.T(MsgDirBrowserUp), "nav:/dir-browse "+parent))
+	}
+	btns = append(btns, PrimaryBtn(e.i18n.T(MsgDirBrowserSelect), "act:/dir-browse select "+path))
+	cb.Buttons(btns...)
+	cb.Divider()
+
+	const maxEntries = 20
+	dirs := 0
+	for _, entry := range entries {
+		if !entry.IsDir {
+			continue
+		}
+		if dirs >= maxEntries {
+			cb.Note(fmt.Sprintf("... and more directories"))
+			break
+		}
+		full := filepath.Join(path, entry.Name)
+		cb.ListItem("📁 "+entry.Name, "→", "nav:/dir-browse "+full)
+		dirs++
+	}
+	if dirs == 0 {
+		cb.Markdown("_(no subdirectories)_")
+	}
+	return cb.Build()
 }
 
 // matchSession resolves a user query to an agent session. Priority:
@@ -6280,6 +6833,8 @@ func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey,
 		e.projectState.Save()
 	}
 
+	go e.renameGroupChat(sessionKey, "[CC]"+filepath.Base(newDir))
+
 	return "", e.i18n.Tf(MsgDirChanged, newDir)
 }
 
@@ -6296,6 +6851,9 @@ func (e *Engine) cmdDir(p Platform, msg *Message, args []string) {
 	}
 
 	currentDir := switcher.GetWorkDir()
+	if absDir, err := filepath.Abs(currentDir); err == nil {
+		currentDir = absDir
+	}
 
 	if len(args) == 0 {
 		if supportsCards(p) {
@@ -6333,6 +6891,11 @@ func (e *Engine) cmdDir(p Platform, msg *Message, args []string) {
 		}
 	}
 
+	if len(args) >= 2 && strings.ToLower(args[0]) == "add" {
+		e.cmdDirAdd(p, msg, args[1:], currentDir)
+		return
+	}
+
 	errMsg, successMsg := e.dirApply(agent, sessions, interactiveKey, msg.SessionKey, args)
 	if errMsg != "" {
 		e.reply(p, msg.ReplyCtx, errMsg)
@@ -6343,6 +6906,40 @@ func (e *Engine) cmdDir(p Platform, msg *Message, args []string) {
 		return
 	}
 	e.reply(p, msg.ReplyCtx, successMsg)
+}
+
+func (e *Engine) cmdDirAdd(p Platform, msg *Message, args []string, currentDir string) {
+	if e.dirHistory == nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgDirNoHistory))
+		return
+	}
+	path := strings.Join(args, " ")
+	path = strings.TrimSpace(path)
+	if strings.HasPrefix(path, "~") {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(homeDir, strings.TrimPrefix(path, "~"))
+		}
+	} else if !filepath.IsAbs(path) {
+		baseDir := currentDir
+		if baseDir == "" {
+			baseDir, _ = os.Getwd()
+		}
+		path = filepath.Join(baseDir, path)
+	}
+	if absDir, err := filepath.Abs(path); err == nil {
+		path = absDir
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgDirInvalidPath, path))
+		return
+	}
+	e.dirHistory.Add(e.name, path)
+	if supportsCards(p) {
+		e.replyWithCard(p, msg.ReplyCtx, e.renderDirCardSafe(msg.SessionKey, 1))
+		return
+	}
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgDirAdded, path))
 }
 
 // cmdSearch searches sessions by name or message content.
@@ -6485,6 +7082,7 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 	}
 
 	sessions.SetSessionName(targetID, name)
+	go e.renameGroupChatWithDir(msg.SessionKey, agent, name)
 
 	shortID := targetID
 	if len(shortID) > 12 {
@@ -6913,8 +7511,8 @@ func (e *Engine) simpleCard(title, color, content string) *Card {
 }
 
 // renderListCardSafe wraps renderListCard and returns an error card on failure.
-func (e *Engine) renderListCardSafe(sessionKey string, page int) *Card {
-	card, err := e.renderListCard(sessionKey, page)
+func (e *Engine) renderListCardSafe(sessionKey string, page int, showAll bool) *Card {
+	card, err := e.renderListCard(sessionKey, page, showAll)
 	if err != nil {
 		agent, _ := e.sessionContextForKey(sessionKey)
 		return e.simpleCard(e.i18n.Tf(MsgCardTitleSessions, agent.Name(), 0), "red", err.Error())
@@ -7216,6 +7814,14 @@ func (e *Engine) cmdHelp(p Platform, msg *Message) {
 	e.replyWithCard(p, msg.ReplyCtx, e.renderHelpCard())
 }
 
+func (e *Engine) cmdInfo(p Platform, msg *Message) {
+	if !supportsCards(p) {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgHelp))
+		return
+	}
+	e.replyWithCard(p, msg.ReplyCtx, e.renderSessionInfoCard(msg.SessionKey))
+}
+
 // cmdStart handles the `/start` slash command.
 //
 // On Telegram, `/start` is a protocol convention sent by the client when a
@@ -7263,6 +7869,10 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/history", action: "nav:/history"},
 				{command: "/delete", action: "cmd:/delete"},
 				{command: "/name", action: "cmd:/name"},
+				{command: "/clear", action: "cmd:/clear"},
+				{command: "/compress", action: "cmd:/compress"},
+				{command: "/attach", action: "cmd:/attach"},
+				{command: "/export", action: "cmd:/export"},
 			},
 		},
 		{
@@ -7275,7 +7885,7 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/lang", action: "nav:/lang"},
 				{command: "/provider", action: "nav:/provider"},
 				{command: "/memory", action: "cmd:/memory"},
-				{command: "/allow", action: "cmd:/allow"},
+				{command: "/notes", action: "cmd:/notes"},
 				{command: "/quiet", action: "cmd:/quiet"},
 				{command: "/tts", action: "cmd:/tts"},
 			},
@@ -7286,14 +7896,29 @@ func helpCardGroups() []helpCardGroup {
 			items: []helpCardItem{
 				{command: "/shell", action: "cmd:/shell"},
 				{command: "/show", action: "cmd:/show"},
+				{command: "/dir", action: "nav:/dir"},
 				{command: "/cron", action: "nav:/cron"},
-				{command: "/heartbeat", action: "nav:/heartbeat"},
 				{command: "/commands", action: "nav:/commands"},
 				{command: "/alias", action: "nav:/alias"},
 				{command: "/skills", action: "nav:/skills"},
-				{command: "/compress", action: "cmd:/compress"},
+				{command: "/allow", action: "cmd:/allow"},
 				{command: "/stop", action: "act:/stop"},
 				{command: "/ps", action: "cmd:/ps"},
+				{command: "/diff", action: "cmd:/diff"},
+			},
+		},
+		{
+			key:      "interaction",
+			titleKey: MsgHelpInteractionSection,
+			items: []helpCardItem{
+				{command: "/web", action: "cmd:/web"},
+				{command: "/terminal", action: "cmd:/terminal"},
+				{command: "/heartbeat", action: "nav:/heartbeat"},
+				{command: "/watch", action: "cmd:/watch"},
+				{command: "/mute", action: "cmd:/mute"},
+				{command: "/unmute", action: "cmd:/unmute"},
+				{command: "/groups", action: "cmd:/groups"},
+				{command: "/bind", action: "cmd:/bind"},
 			},
 		},
 		{
@@ -7304,12 +7929,18 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/doctor", action: "nav:/doctor"},
 				{command: "/usage", action: "cmd:/usage"},
 				{command: "/config", action: "nav:/config"},
-				{command: "/bind", action: "cmd:/bind"},
+				{command: "/whoami", action: "cmd:/whoami"},
 				{command: "/workspace", action: "cmd:/workspace"},
-				{command: "/dir", action: "nav:/dir"},
 				{command: "/version", action: "nav:/version"},
 				{command: "/upgrade", action: "nav:/upgrade"},
 				{command: "/restart", action: "cmd:/restart"},
+			},
+		},
+		{
+			key:      "info",
+			titleKey: MsgHelpInfoSection,
+			items: []helpCardItem{
+				{command: "/info", action: "nav:/info"},
 			},
 		},
 	}
@@ -8077,6 +8708,20 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 		SessionKey: sessionKey,
 	})
 
+	if e.memoryExtractor != nil && agentSession != nil {
+		if hp, ok := state.agent.(HistoryProvider); ok {
+			if agentSID := agentSession.CurrentSessionID(); agentSID != "" {
+				if history, err := hp.GetSessionHistory(e.ctx, agentSID, 20); err == nil && len(history) > 0 {
+					workDir := state.workspaceDir
+					if workDir == "" {
+						workDir = e.baseWorkDir
+					}
+					go e.memoryExtractor.TriggerExtraction(e.ctx, sessionKey, state.platform, state.replyCtx, history, extractUserID(sessionKey), workDir)
+				}
+			}
+		}
+	}
+
 	return true
 }
 
@@ -8812,6 +9457,218 @@ func (e *Engine) SendToSession(sessionKey, message string) error {
 	return e.SendToSessionWithAttachments(sessionKey, message, nil, nil)
 }
 
+// SendNotifyCard sends a notification card to the user via their messaging platform.
+// Used by the Notification hook to push informational cards (e.g. permission_prompt, idle_prompt).
+func (e *Engine) SendNotifyCard(req NotifyRequest) error {
+	p, replyCtx, err := e.resolveNotifyTarget(req.SessionKey, req.Cwd)
+	if err != nil {
+		return err
+	}
+
+	switch req.Type {
+	case "permission_prompt":
+		e.sendNotifyPermission(p, replyCtx, req)
+	case "idle_prompt":
+		e.sendNotifyIdle(p, replyCtx, req)
+	default:
+		e.sendNotifyGeneric(p, replyCtx, req)
+	}
+	return nil
+}
+
+func (e *Engine) sendNotifyPermission(p Platform, replyCtx any, req NotifyRequest) {
+	toolName := req.ToolName
+	if toolName == "" {
+		toolName = "Unknown"
+	}
+	toolInput := req.ToolInput
+	if toolInput == "" {
+		toolInput = req.Message
+	}
+	if len(toolInput) > 500 {
+		toolInput = toolInput[:500] + "…"
+	}
+
+	// Inline buttons (Telegram)
+	if bs, ok := p.(InlineButtonSender); ok {
+		prompt := fmt.Sprintf("🔐 %s\n\n**%s**\n```\n%s\n```", notifyProjectLabel(req), toolName, toolInput)
+		buttons := [][]ButtonOption{
+			{
+				{Text: e.i18n.T(MsgPermBtnAllow), Data: "perm:allow"},
+				{Text: e.i18n.T(MsgPermBtnDeny), Data: "perm:deny"},
+			},
+		}
+		if err := bs.SendWithButtons(e.ctx, replyCtx, prompt, buttons); err == nil {
+			return
+		}
+	}
+
+	// Card with buttons (Feishu)
+	if supportsCards(p) {
+		body := fmt.Sprintf("**%s**\n```\n%s\n```", toolName, toolInput)
+		extra := func(label, color string) map[string]string {
+			return map[string]string{
+				"perm_label": label,
+				"perm_color": color,
+				"perm_body":  body,
+			}
+		}
+		allowBtn := CardButton{Text: e.i18n.T(MsgPermBtnAllow), Type: "primary", Value: "perm:allow",
+			Extra: extra("✅ "+e.i18n.T(MsgPermBtnAllow), "green")}
+		denyBtn := CardButton{Text: e.i18n.T(MsgPermBtnDeny), Type: "danger", Value: "perm:deny",
+			Extra: extra("❌ "+e.i18n.T(MsgPermBtnDeny), "red")}
+
+		card := NewCard().
+			Title("🔐 "+notifyProjectLabel(req), "orange").
+			Markdown(body).
+			ButtonsEqual(allowBtn, denyBtn).
+			Build()
+		e.sendWithCard(p, replyCtx, card)
+		return
+	}
+
+	e.send(p, replyCtx, fmt.Sprintf("🔐 %s\n%s: %s", notifyProjectLabel(req), toolName, toolInput))
+}
+
+func (e *Engine) sendNotifyIdle(p Platform, replyCtx any, req NotifyRequest) {
+	title := req.Title
+	if title == "" {
+		title = "💤 Waiting for Input"
+	}
+
+	if supportsCards(p) {
+		cb := NewCard().Title(title, "blue")
+		if req.Message != "" {
+			cb = cb.Markdown(req.Message)
+		}
+		if label := notifyProjectLabel(req); label != "" {
+			cb = cb.Note(label)
+		}
+		e.sendWithCard(p, replyCtx, cb.Build())
+		return
+	}
+
+	msg := title
+	if req.Message != "" {
+		msg += "\n" + req.Message
+	}
+	if label := notifyProjectLabel(req); label != "" {
+		msg += "\n📁 " + label
+	}
+	e.send(p, replyCtx, msg)
+}
+
+func (e *Engine) sendNotifyGeneric(p Platform, replyCtx any, req NotifyRequest) {
+	title := req.Title
+	if title == "" {
+		title = "Claude Code"
+	}
+
+	if supportsCards(p) {
+		cb := NewCard().Title(title, "blue")
+		if req.Message != "" {
+			cb = cb.Markdown(req.Message)
+		}
+		if label := notifyProjectLabel(req); label != "" {
+			cb = cb.Note(label)
+		}
+		e.sendWithCard(p, replyCtx, cb.Build())
+		return
+	}
+
+	msg := title
+	if req.Message != "" {
+		msg += "\n" + req.Message
+	}
+	e.send(p, replyCtx, msg)
+}
+
+func notifyProjectLabel(req NotifyRequest) string {
+	if req.Project != "" {
+		return req.Project
+	}
+	if req.Cwd != "" {
+		parts := strings.Split(req.Cwd, "/")
+		if len(parts) > 2 {
+			return "…/" + strings.Join(parts[len(parts)-2:], "/")
+		}
+		return req.Cwd
+	}
+	return ""
+}
+
+func (e *Engine) resolveNotifyTarget(sessionKey, cwd string) (Platform, any, error) {
+	// Try active session first
+	e.interactiveMu.Lock()
+	var state *interactiveState
+	if sessionKey != "" {
+		state = e.interactiveStates[sessionKey]
+		if state == nil && e.multiWorkspace {
+			if iKey := e.interactiveKeyForSessionKeyLocked(sessionKey); iKey != sessionKey {
+				state = e.interactiveStates[iKey]
+			}
+		}
+	} else if len(e.interactiveStates) == 1 {
+		for _, s := range e.interactiveStates {
+			state = s
+		}
+	} else if len(e.interactiveStates) > 1 {
+		for _, s := range e.interactiveStates {
+			state = s
+			break
+		}
+	}
+	e.interactiveMu.Unlock()
+
+	if state != nil {
+		state.mu.Lock()
+		p := state.platform
+		rc := state.replyCtx
+		state.mu.Unlock()
+		if p != nil {
+			return p, rc, nil
+		}
+	}
+
+	// Fallback: resolve via workspace binding
+	if cwd != "" && e.workspaceBindings != nil {
+		matches := e.workspaceBindings.LookupByWorkspace(normalizeWorkspacePath(cwd))
+		if len(matches) > 0 {
+			sessionKey = matches[0].ChannelKey
+		}
+	}
+
+	if sessionKey == "" {
+		return nil, nil, fmt.Errorf("no active session or workspace binding to deliver notification")
+	}
+
+	// Reconstruct replyCtx from sessionKey
+	platformName := ""
+	if idx := strings.Index(sessionKey, ":"); idx > 0 {
+		platformName = sessionKey[:idx]
+	}
+	var targetPlatform Platform
+	for _, candidate := range e.platforms {
+		if candidate.Name() == platformName {
+			targetPlatform = candidate
+			break
+		}
+	}
+	if targetPlatform == nil {
+		return nil, nil, fmt.Errorf("platform %q not found for notification", platformName)
+	}
+
+	rc, ok := targetPlatform.(ReplyContextReconstructor)
+	if !ok {
+		return nil, nil, fmt.Errorf("platform %q does not support proactive messaging", platformName)
+	}
+	replyCtx, err := rc.ReconstructReplyCtx(sessionKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reconstruct reply context: %w", err)
+	}
+	return targetPlatform, replyCtx, nil
+}
+
 func (e *Engine) SendToSessionWithAttachments(sessionKey, message string, images []ImageAttachment, files []FileAttachment) error {
 	e.interactiveMu.Lock()
 
@@ -9016,7 +9873,106 @@ func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName
 	e.send(p, replyCtx, prompt)
 }
 
-// sendAskQuestionPrompt renders one question (by index) from the AskUserQuestion list.
+// sendExternalPermissionPrompt renders a permission prompt without emitting
+// HookEventPermissionRequested, avoiding recursion when the request itself
+// originated from a hook.
+func (e *Engine) sendExternalPermissionPrompt(p Platform, replyCtx any, prompt, toolName, toolInput string) {
+	if bs, ok := p.(InlineButtonSender); ok {
+		buttons := [][]ButtonOption{
+			{
+				{Text: e.i18n.T(MsgPermBtnAllow), Data: "perm:allow"},
+				{Text: e.i18n.T(MsgPermBtnDeny), Data: "perm:deny"},
+			},
+			{
+				{Text: e.i18n.T(MsgPermBtnAllowAll), Data: "perm:allow_all"},
+			},
+		}
+		if err := e.waitOutgoing(p); err != nil {
+			return
+		}
+		if err := bs.SendWithButtons(e.ctx, replyCtx, prompt, buttons); err == nil {
+			return
+		}
+	}
+
+	if supportsCards(p) {
+		body := fmt.Sprintf(e.i18n.T(MsgPermCardBody), toolName, toolInput)
+		extra := func(label, color string) map[string]string {
+			return map[string]string{
+				"perm_label": label,
+				"perm_color": color,
+				"perm_body":  body,
+			}
+		}
+		allowBtn := CardButton{Text: e.i18n.T(MsgPermBtnAllow), Type: "primary", Value: "perm:allow",
+			Extra: extra("✅ "+e.i18n.T(MsgPermBtnAllow), "green")}
+		denyBtn := CardButton{Text: e.i18n.T(MsgPermBtnDeny), Type: "danger", Value: "perm:deny",
+			Extra: extra("❌ "+e.i18n.T(MsgPermBtnDeny), "red")}
+		allowAllBtn := CardButton{Text: e.i18n.T(MsgPermBtnAllowAll), Type: "default", Value: "perm:allow_all",
+			Extra: extra("✅ "+e.i18n.T(MsgPermBtnAllowAll), "green")}
+
+		card := NewCard().
+			Title(e.i18n.T(MsgPermCardTitle)+" [Hook]", "orange").
+			Markdown(body).
+			ButtonsEqual(allowBtn, denyBtn).
+			Buttons(allowAllBtn).
+			Note(e.i18n.T(MsgPermCardNote)).
+			Build()
+		e.sendWithCard(p, replyCtx, card)
+		return
+	}
+
+	e.send(p, replyCtx, prompt)
+}
+
+// RegisterExternalPermission stores a pending permission from an external hook
+// and sends the permission card to the target platform.
+func (e *Engine) RegisterExternalPermission(ep *externalPendingPermission, p Platform, replyCtx any) {
+	e.externalPermMu.Lock()
+	e.externalPermissions[ep.RequestID] = ep
+	e.externalPermMu.Unlock()
+
+	slog.Info("external permission registered",
+		"request_id", ep.RequestID,
+		"tool", ep.ToolName,
+		"channel_key", ep.ChannelKey,
+	)
+
+	toolInput := formatToolInput(ep.ToolName, "", ep.ToolInput)
+	prompt := fmt.Sprintf(e.i18n.T(MsgPermissionPrompt), ep.ToolName, toolInput)
+	prompt = e.i18n.T(MsgExtPermPrefix) + prompt
+	e.sendExternalPermissionPrompt(p, replyCtx, prompt, ep.ToolName, toolInput)
+}
+
+func (e *Engine) resolveExternalPermission(sessionKey, content string) bool {
+	lower := strings.ToLower(strings.TrimSpace(content))
+	e.externalPermMu.Lock()
+	defer e.externalPermMu.Unlock()
+
+	for id, ep := range e.externalPermissions {
+		if !ep.matchesSessionKey(sessionKey) {
+			continue
+		}
+		var decision *ExternalPermDecision
+		if isAllowResponse(lower) || isApproveAllResponse(lower) {
+			decision = &ExternalPermDecision{Behavior: "allow"}
+		} else if isDenyResponse(lower) {
+			decision = &ExternalPermDecision{Behavior: "deny", Message: "User denied this tool use."}
+		} else {
+			return false
+		}
+		ep.resolve(decision)
+		delete(e.externalPermissions, id)
+		slog.Info("external permission resolved",
+			"request_id", id,
+			"behavior", decision.Behavior,
+			"session_key", sessionKey,
+		)
+		return true
+	}
+	return false
+}
+
 // qIdx is the 0-based index of the question to display.
 func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []UserQuestion, qIdx int) {
 	if qIdx >= len(questions) {
@@ -9388,12 +10344,18 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 		return e.renderStatusCard(sessionKey, extractUserID(sessionKey))
 	case "/list":
 		page := 1
+		showAll := false
 		if args != "" {
-			if n, err := strconv.Atoi(args); err == nil && n > 0 {
-				page = n
+			parts := strings.Fields(args)
+			for _, p := range parts {
+				if strings.EqualFold(p, "all") {
+					showAll = true
+				} else if n, err := strconv.Atoi(p); err == nil && n > 0 {
+					page = n
+				}
 			}
 		}
-		return e.renderListCardSafe(sessionKey, page)
+		return e.renderListCardSafe(sessionKey, page, showAll)
 	case "/dir":
 		page := 1
 		if args != "" {
@@ -9402,8 +10364,12 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 			}
 		}
 		return e.renderDirCardSafe(sessionKey, page)
+	case "/dir-browse":
+		return e.renderDirBrowserCard(sessionKey, args)
 	case "/current":
 		return e.renderCurrentCard(sessionKey)
+	case "/watch":
+		return e.renderWatchCard(sessionKey)
 	case "/history":
 		return e.renderHistoryCard(sessionKey)
 	case "/provider":
@@ -9422,6 +10388,14 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 		return e.renderConfigCard()
 	case "/skills":
 		return e.renderSkillsCard()
+	case "/info":
+		if args == "commands" {
+			return e.renderSessionCommandsCard(sessionKey)
+		}
+		if args == "resources" {
+			return e.renderSessionResourcesCard(sessionKey)
+		}
+		return e.renderSessionInfoCard(sessionKey)
 	case "/doctor":
 		return e.renderDoctorCard()
 	case "/whoami":
@@ -9435,19 +10409,100 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/new":
 		return e.renderCurrentCard(sessionKey)
 	case "/switch":
-		return e.renderListCardSafe(sessionKey, 1)
+		return e.renderListCardSafe(sessionKey, 1, false)
 	case "/delete-mode":
 		if strings.HasPrefix(args, "cancel") {
-			return e.renderListCardSafe(sessionKey, 1)
+			return e.renderListCardSafe(sessionKey, 1, false)
 		}
 		return e.renderDeleteModeCard(sessionKey)
 	case "/stop":
 		return e.renderStatusCard(sessionKey, extractUserID(sessionKey))
+	case "/terminal":
+		iKey := e.interactiveKeyForSessionKey(sessionKey)
+		e.interactiveMu.Lock()
+		state := e.interactiveStates[iKey]
+		e.interactiveMu.Unlock()
+		var agentName string
+		if a := e.agent; a != nil {
+			agentName = a.Name()
+		}
+		hasTerminal := state != nil && state.agentSession != nil
+		if hasTerminal {
+			_, canAttach := state.agentSession.(TerminalAttacher)
+			hasTerminal = canAttach
+		}
+		status := SessionStatusWaiting
+		if state != nil && state.agentSession != nil {
+			_, sessions := e.sessionContextForKey(sessionKey)
+			if sess := sessions.GetActive(sessionKey); sess != nil && sess.Busy() {
+				status = SessionStatusRunning
+			}
+		} else {
+			status = SessionStatusDone
+		}
+		return RenderSessionActionCard(e.i18n, agentName, e.name, status, hasTerminal, KbPageBasic)
+	case "/kb":
+		return e.renderSessionCardWithKeyboard(sessionKey, args)
 	case "/upgrade":
 		return e.renderUpgradeCard()
 	}
 	return nil
 }
+
+// renderSessionCardWithKeyboard renders the session control card with the specified keyboard page.
+func (e *Engine) renderSessionCardWithKeyboard(sessionKey, page string) *Card {
+	if page == "hide" {
+		page = KbPageNone
+	}
+
+	iKey := e.interactiveKeyForSessionKey(sessionKey)
+	e.interactiveMu.Lock()
+	state := e.interactiveStates[iKey]
+	e.interactiveMu.Unlock()
+
+	var agentName string
+	if a := e.agent; a != nil {
+		agentName = a.Name()
+	}
+	hasTerminal := state != nil && state.agentSession != nil
+	if hasTerminal {
+		_, canAttach := state.agentSession.(TerminalAttacher)
+		hasTerminal = canAttach
+	}
+	status := SessionStatusWaiting
+	if state != nil && state.agentSession != nil {
+		_, sessions := e.sessionContextForKey(sessionKey)
+		if sess := sessions.GetActive(sessionKey); sess != nil && sess.Busy() {
+			status = SessionStatusRunning
+		}
+	} else {
+		status = SessionStatusDone
+	}
+	return RenderSessionActionCard(e.i18n, agentName, e.name, status, hasTerminal, page)
+}
+
+// injectKeyForSession sends a key to the active agent session's terminal.
+func (e *Engine) injectKeyForSession(sessionKey, key string) {
+	iKey := e.interactiveKeyForSessionKey(sessionKey)
+	e.interactiveMu.Lock()
+	state := e.interactiveStates[iKey]
+	e.interactiveMu.Unlock()
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	sess := state.agentSession
+	state.mu.Unlock()
+	if sess == nil {
+		return
+	}
+	if ki, ok := sess.(KeyInjector); ok {
+		if err := ki.InjectKey(key); err != nil {
+			slog.Warn("shortcut: key inject failed", "key", key, "error", err)
+		}
+	}
+}
+
 
 func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
 	agent, sessions := e.sessionContextForKey(sessionKey)
@@ -9477,10 +10532,79 @@ func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
 	return e.renderModelSwitchResultCard(resolved, err)
 }
 
+// SendControlConsole creates a separate control thread with a terminal card.
+// It sends an anchor message and replies with the session control card.
+func (e *Engine) SendControlConsole(p Platform, replyCtx any, sessionKey, sessionName string) {
+	tc, ok := p.(ThreadCreator)
+	if !ok {
+		return
+	}
+
+	var agentName string
+	if a := e.agent; a != nil {
+		agentName = a.Name()
+	}
+
+	anchor := "🎛 " + sessionName + " · " + e.i18n.T(MsgCmdTerminal)
+	rootMsgID, err := tc.CreateThreadAnchor(context.Background(), replyCtx, anchor)
+	if err != nil {
+		slog.Warn("control console: create anchor failed", "error", err)
+		return
+	}
+
+	card := RenderSessionActionCard(e.i18n, agentName, e.name, SessionStatusRunning, true, KbPageBasic)
+	cardMsgID, err := tc.SendCardInThread(context.Background(), replyCtx, rootMsgID, card)
+	if err != nil {
+		slog.Warn("control console: send card failed", "error", err)
+		return
+	}
+
+	e.controlCardMu.Lock()
+	e.controlCardMsgIDs[sessionKey] = cardMsgID
+	e.controlCardMu.Unlock()
+}
+
+
 // executeCardAction performs the side-effect for act: prefixed actions
 // (e.g. switching model/mode/lang) before the card is re-rendered.
 func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
+	if strings.HasPrefix(cmd, "notes_") && e.memoryExtractor != nil {
+		action := strings.TrimPrefix(cmd, "notes_")
+		parts := strings.Fields(args)
+		if len(parts) >= 1 {
+			confirmID := parts[0]
+			idx := -1
+			if len(parts) >= 2 {
+				idx, _ = strconv.Atoi(parts[1])
+			}
+			var memAction string
+			switch action {
+			case "approve_all":
+				memAction = "approve_all"
+			case "reject_all":
+				memAction = "reject_all"
+			case "approve":
+				memAction = "approve_single"
+			case "reject":
+				memAction = "reject_single"
+			}
+			if memAction != "" {
+				result, err := e.memoryExtractor.HandleConfirmAction(confirmID, memAction, idx)
+				if err != nil {
+					slog.Warn("notes: card action failed", "error", err, "action", action)
+				} else if result != "" {
+					slog.Info("notes: card action", "result", result, "session", sessionKey)
+				}
+				return
+			}
+		}
+	}
+
 	switch cmd {
+	case "/watch":
+		if strings.EqualFold(strings.TrimSpace(args), "stop") {
+			e.stopWatch(sessionKey)
+		}
 	case "/model":
 		if args == "" {
 			return
@@ -9709,6 +10833,17 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			slog.Debug("dir card action failed", "message", errMsg)
 		}
 
+	case "/dir-browse":
+		if strings.HasPrefix(args, "select ") {
+			dirPath := strings.TrimPrefix(args, "select ")
+			agent, sessions := e.sessionContextForKey(sessionKey)
+			ik := e.interactiveKeyForSessionKey(sessionKey)
+			errMsg, _ := e.dirApply(agent, sessions, ik, sessionKey, []string{dirPath})
+			if errMsg != "" {
+				slog.Debug("dir-browse select failed", "message", errMsg)
+			}
+		}
+
 	case "/stop":
 		sessionKey = e.interactiveKeyForSessionKey(sessionKey)
 		e.stopInteractiveSession(sessionKey, nil, nil)
@@ -9747,6 +10882,182 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		case "unmute":
 			e.cronScheduler.Store().SetMute(id, false)
 		}
+
+	case "/session-group":
+		go e.executeSessionGroup(sessionKey)
+
+	case "/dir-group":
+		go e.executeDirGroup(sessionKey, args)
+
+	case "/groups":
+		if strings.HasPrefix(args, "dissolve ") {
+			target := strings.TrimPrefix(args, "dissolve ")
+			platformName := extractPlatformName(sessionKey)
+			var targetPlatform Platform
+			for _, pl := range e.platforms {
+				if pl.Name() == platformName {
+					targetPlatform = pl
+					break
+				}
+			}
+			if targetPlatform == nil {
+				return
+			}
+			rc, ok := targetPlatform.(ReplyContextReconstructor)
+			if !ok {
+				return
+			}
+			rctx, err := rc.ReconstructReplyCtx(sessionKey)
+			if err != nil {
+				return
+			}
+			fakeMsg := &Message{SessionKey: sessionKey, ReplyCtx: rctx, UserID: extractUserID(sessionKey)}
+			e.dissolveGroup(targetPlatform, fakeMsg, target)
+		}
+
+	case "/key":
+		if args == "" {
+			return
+		}
+		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+		e.interactiveMu.Lock()
+		state := e.interactiveStates[interactiveKey]
+		e.interactiveMu.Unlock()
+		if state == nil {
+			return
+		}
+		state.mu.Lock()
+		sess := state.agentSession
+		state.mu.Unlock()
+		if sess == nil {
+			return
+		}
+		if ki, ok := sess.(KeyInjector); ok {
+			if err := ki.InjectKey(args); err != nil {
+				slog.Warn("card: key inject failed", "key", args, "error", err)
+			}
+		}
+
+	case "/cmd":
+		if args == "" {
+			return
+		}
+		iKey := e.interactiveKeyForSessionKey(sessionKey)
+		e.interactiveMu.Lock()
+		st := e.interactiveStates[iKey]
+		e.interactiveMu.Unlock()
+		if st == nil {
+			return
+		}
+		st.mu.Lock()
+		as := st.agentSession
+		st.mu.Unlock()
+		if as != nil {
+			_ = as.Send("/"+args, nil, nil)
+		}
+
+	case "/export-text":
+		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+		e.interactiveMu.Lock()
+		state := e.interactiveStates[interactiveKey]
+		e.interactiveMu.Unlock()
+		if state == nil {
+			return
+		}
+		state.mu.Lock()
+		sess := state.agentSession
+		p := state.platform
+		rctx := state.replyCtx
+		state.mu.Unlock()
+		if sess == nil || p == nil {
+			return
+		}
+		if bp, ok := sess.(TerminalBufferProvider); ok {
+			buf, err := bp.CaptureBuffer()
+			if err != nil {
+				slog.Warn("card: capture buffer failed", "error", err)
+				return
+			}
+			if buf == "" {
+				return
+			}
+			content := "```\n" + buf + "\n```"
+			if len(content) > maxPlatformMessageLen {
+				content = "```\n" + buf[len(buf)-(maxPlatformMessageLen-10):] + "\n```"
+			}
+			_ = p.Reply(e.ctx, rctx, content)
+		}
+
+	case "/close-session":
+		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+		e.stopInteractiveSession(interactiveKey, nil, nil)
+
+	case "/screenshot":
+		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+		e.interactiveMu.Lock()
+		state := e.interactiveStates[interactiveKey]
+		e.interactiveMu.Unlock()
+		if state == nil {
+			return
+		}
+		state.mu.Lock()
+		sess := state.agentSession
+		p := state.platform
+		rctx := state.replyCtx
+		state.mu.Unlock()
+		if sess == nil || p == nil {
+			return
+		}
+		bp, ok := sess.(TerminalBufferProvider)
+		if !ok {
+			return
+		}
+		buf, err := bp.CaptureBuffer()
+		if err != nil || buf == "" {
+			slog.Warn("card: screenshot capture failed", "error", err)
+			return
+		}
+		pngData, err := RenderANSIToPNG(buf)
+		if err != nil || len(pngData) == 0 {
+			slog.Warn("card: screenshot render failed", "error", err)
+			return
+		}
+		if img, ok := p.(ImageSender); ok {
+			_ = img.SendImage(e.ctx, rctx, ImageAttachment{
+				MimeType: "image/png",
+				Data:     pngData,
+				FileName: "screenshot.png",
+			})
+		} else {
+			_ = p.Reply(e.ctx, rctx, "```\n"+buf+"\n```")
+		}
+
+	case "/open-terminal":
+		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+		e.interactiveMu.Lock()
+		state := e.interactiveStates[interactiveKey]
+		e.interactiveMu.Unlock()
+		if state == nil {
+			return
+		}
+		state.mu.Lock()
+		sess := state.agentSession
+		p := state.platform
+		rctx := state.replyCtx
+		state.mu.Unlock()
+		if sess == nil || p == nil {
+			return
+		}
+		ta, ok := sess.(TerminalAttacher)
+		if !ok {
+			return
+		}
+		url, err := GetTerminalServer().Register(ta)
+		if err != nil {
+			slog.Warn("card: open-terminal failed", "error", err)
+			return
+		}
+		_ = p.Reply(e.ctx, rctx, e.i18n.Tf(MsgSessionTerminalURL, url))
 	}
 }
 
@@ -10399,13 +11710,25 @@ func (e *Engine) renderModeCard() *Card {
 	return cb.Build()
 }
 
-func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
+func (e *Engine) renderListCard(sessionKey string, page int, showAll bool) (*Card, error) {
 	agent, sessions := e.sessionContextForKey(sessionKey)
-	agentSessions, err := agent.ListSessions(e.ctx)
+	var agentSessions []AgentSessionInfo
+	var err error
+	if showAll {
+		if lister, ok := agent.(AllSessionsLister); ok {
+			agentSessions, err = lister.ListAllSessions(e.ctx)
+		} else {
+			agentSessions, err = agent.ListSessions(e.ctx)
+		}
+	} else {
+		agentSessions, err = agent.ListSessions(e.ctx)
+		if err == nil {
+			agentSessions = e.applySessionFilter(agentSessions, sessions)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf(e.i18n.T(MsgListError), err)
 	}
-	agentSessions = e.applySessionFilter(agentSessions, sessions)
 	if len(agentSessions) == 0 {
 		return e.simpleCard(e.i18n.Tf(MsgCardTitleSessions, agent.Name(), 0), "turquoise", e.i18n.T(MsgListEmpty)), nil
 	}
@@ -10465,13 +11788,26 @@ func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 		)
 	}
 
+	listSuffix := ""
+	if showAll {
+		listSuffix = " all"
+	}
+
 	var navBtns []CardButton
 	if page > 1 {
-		navBtns = append(navBtns, e.cardPrevButton(fmt.Sprintf("nav:/list %d", page-1)))
+		navBtns = append(navBtns, e.cardPrevButton(fmt.Sprintf("nav:/list %d%s", page-1, listSuffix)))
 	}
 	navBtns = append(navBtns, e.cardBackButton())
 	if page < totalPages {
-		navBtns = append(navBtns, e.cardNextButton(fmt.Sprintf("nav:/list %d", page+1)))
+		navBtns = append(navBtns, e.cardNextButton(fmt.Sprintf("nav:/list %d%s", page+1, listSuffix)))
+	}
+	if showAll {
+		navBtns = append(navBtns, DefaultBtn("📂 Current", "nav:/list 1"))
+	} else {
+		navBtns = append(navBtns, DefaultBtn("🌐 All", "nav:/list 1 all"))
+	}
+	if e.platformSupportsGroupChat(sessionKey) {
+		navBtns = append(navBtns, DefaultBtn(e.i18n.T(MsgGroupCreateBtn), "act:/session-group"))
 	}
 	cb.Buttons(navBtns...)
 
@@ -10498,6 +11834,9 @@ func (e *Engine) renderDirCard(sessionKey string, page int) (*Card, error) {
 		return nil, fmt.Errorf("%s", e.i18n.T(MsgDirNotSupported))
 	}
 	currentDir := switcher.GetWorkDir()
+	if absDir, err := filepath.Abs(currentDir); err == nil {
+		currentDir = absDir
+	}
 	var history []string
 	if e.dirHistory != nil {
 		history = e.dirHistory.List(e.name)
@@ -10525,23 +11864,39 @@ func (e *Engine) renderDirCard(sessionKey string, page int) (*Card, error) {
 		cb.Note(e.i18n.T(MsgDirCardEmptyHistory))
 	} else {
 		cb.Divider()
+		supportsGroup := e.platformSupportsGroupChat(sessionKey)
 		for i := start; i < end; i++ {
 			dir := history[i]
 			marker := "◻"
 			if dir == currentDir {
 				marker = "▶"
 			}
-			btnType := "default"
-			if dir == currentDir {
-				btnType = "primary"
-			}
 			displayPath := dirCardTruncPath(dir)
-			cb.ListItemBtn(
-				fmt.Sprintf("%s **%d.** `%s`", marker, i+1, displayPath),
-				fmt.Sprintf("#%d", i+1),
-				btnType,
-				fmt.Sprintf("act:/dir select %d", i+1),
-			)
+			if supportsGroup {
+				btnText := e.i18n.T(MsgGroupCreateBtn)
+				if e.workspaceBindings != nil {
+					if n := len(e.workspaceBindings.LookupByWorkspace(dir)); n > 0 {
+						btnText = fmt.Sprintf("%s(%d)", btnText, n)
+					}
+				}
+				cb.ListItemBtn(
+					fmt.Sprintf("%s **%d.** `%s`", marker, i+1, displayPath),
+					btnText,
+					"default",
+					fmt.Sprintf("act:/dir-group %d", i+1),
+				)
+			} else {
+				btnType := "default"
+				if dir == currentDir {
+					btnType = "primary"
+				}
+				cb.ListItemBtn(
+					fmt.Sprintf("%s **%d.** `%s`", marker, i+1, displayPath),
+					fmt.Sprintf("#%d", i+1),
+					btnType,
+					fmt.Sprintf("act:/dir select %d", i+1),
+				)
+			}
 		}
 	}
 
@@ -10551,6 +11906,35 @@ func (e *Engine) renderDirCard(sessionKey string, page int) (*Card, error) {
 	}
 	actionRow = append(actionRow, DefaultBtn(e.i18n.T(MsgDirCardReset), "act:/dir reset"))
 	cb.Buttons(actionRow...)
+
+	// Cross-group section: show other workspace bindings the user can switch to
+	if e.workspaceBindings != nil && e.multiWorkspace {
+		projectKey := "project:" + e.name
+		bindings := e.workspaceBindings.ListByProject(projectKey)
+		currentChannelKey := workspaceChannelKey(extractPlatformName(sessionKey), extractChannelID(sessionKey))
+		if len(bindings) > 1 {
+			cb.Divider()
+			cb.Markdown(e.i18n.T(MsgDirOtherGroups))
+			for chKey, b := range bindings {
+				if chKey == currentChannelKey {
+					continue
+				}
+				displayName := b.ChannelName
+				if displayName == "" {
+					displayName = chKey
+				}
+				displayPath := dirCardTruncPath(b.Workspace)
+				cb.ListItemBtn(
+					fmt.Sprintf("**%s**\n`%s`", displayName, displayPath),
+					e.i18n.T(MsgDirSwitchGroupBtn),
+					"default",
+					fmt.Sprintf("act:/dir switch-group %s", chKey),
+				)
+			}
+		}
+	}
+
+	cb.Note(e.i18n.T(MsgDirCardHint))
 
 	var navBtns []CardButton
 	if totalPages > 1 && page > 1 {
@@ -11663,7 +13047,13 @@ func (e *Engine) executeCustomCommand(p Platform, msg *Message, cmd *CustomComma
 	)
 
 	msg.Content = prompt
-	go e.processInteractiveMessageWith(p, msg, session, agent, sessions, interactiveKey, workspaceDir, msg.SessionKey)
+	tctx := WithTrace(context.Background(), TraceContext{
+		SessionKey: msg.SessionKey,
+		Platform:   msg.Platform,
+		UserID:     msg.UserID,
+		MsgID:      msg.MessageID,
+	})
+	go e.processInteractiveMessageWith(tctx, p, msg, session, agent, sessions, interactiveKey, workspaceDir, msg.SessionKey)
 }
 
 // executeShellCommand runs a shell command and sends the output to the user.
@@ -11891,7 +13281,13 @@ func (e *Engine) executeSkill(p Platform, msg *Message, skill *Skill, args []str
 	)
 
 	msg.Content = prompt
-	go e.processInteractiveMessageWith(p, msg, session, agent, sessions, interactiveKey, workspaceDir, msg.SessionKey)
+	tctx := WithTrace(context.Background(), TraceContext{
+		SessionKey: msg.SessionKey,
+		Platform:   msg.Platform,
+		UserID:     msg.UserID,
+		MsgID:      msg.MessageID,
+	})
+	go e.processInteractiveMessageWith(tctx, p, msg, session, agent, sessions, interactiveKey, workspaceDir, msg.SessionKey)
 }
 
 func (e *Engine) cmdSkills(p Platform, msg *Message) {
@@ -12642,6 +14038,68 @@ func (e *Engine) deleteSessionDisplayName(sessions *SessionManager, matched *Age
 }
 
 // toolCodeLang picks the code block language hint for tool display.
+func formatToolInput(toolName, toolInput string, raw map[string]any) string {
+	if toolInput == "" && len(raw) == 0 {
+		return ""
+	}
+	switch toolName {
+	case "shell", "run_shell_command", "Bash":
+		cmd := toolInput
+		if v, ok := raw["command"].(string); ok && v != "" {
+			cmd = v
+		}
+		return fmt.Sprintf("```bash\n%s\n```", cmd)
+	case "Edit", "edit_file", "replace", "ReplaceInFile":
+		fp, _ := raw["file_path"].(string)
+		oldStr, _ := raw["old_string"].(string)
+		newStr, _ := raw["new_string"].(string)
+		if fp != "" && (oldStr != "" || newStr != "") {
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("📝 `%s`\n```diff\n", fp))
+			for _, line := range strings.Split(oldStr, "\n") {
+				b.WriteString("- " + line + "\n")
+			}
+			for _, line := range strings.Split(newStr, "\n") {
+				b.WriteString("+ " + line + "\n")
+			}
+			b.WriteString("```")
+			return truncateIf(b.String(), 2000)
+		}
+	case "Write", "write_file", "WriteFile":
+		fp, _ := raw["file_path"].(string)
+		content, _ := raw["content"].(string)
+		if fp != "" {
+			if len([]rune(content)) > 500 {
+				content = string([]rune(content)[:500]) + "..."
+			}
+			return fmt.Sprintf("📄 `%s`\n```\n%s\n```", fp, content)
+		}
+	case "Read", "read_file", "ReadFile":
+		fp, _ := raw["file_path"].(string)
+		if fp != "" {
+			return fmt.Sprintf("📖 `%s`", fp)
+		}
+	case "WebSearch":
+		q, _ := raw["query"].(string)
+		if q != "" {
+			return fmt.Sprintf("🔍 `%s`", q)
+		}
+	case "WebFetch":
+		u, _ := raw["url"].(string)
+		if u != "" {
+			return fmt.Sprintf("🌐 `%s`", u)
+		}
+	}
+	if strings.Contains(toolInput, "```") {
+		return toolInput
+	}
+	if strings.Contains(toolInput, "\n") || utf8.RuneCountInString(toolInput) > 200 {
+		lang := toolCodeLang(toolName, toolInput)
+		return fmt.Sprintf("```%s\n%s\n```", lang, toolInput)
+	}
+	return fmt.Sprintf("`%s`", toolInput)
+}
+
 func toolCodeLang(toolName, input string) string {
 	switch toolName {
 	case "shell", "run_shell_command", "Bash":
@@ -13244,6 +14702,214 @@ func extractPlatformName(sessionKey string) string {
 		return sessionKey[:i]
 	}
 	return sessionKey
+}
+
+func (e *Engine) platformSupportsGroupChat(sessionKey string) bool {
+	platformName := extractPlatformName(sessionKey)
+	for _, p := range e.platforms {
+		if p.Name() == platformName {
+			_, ok := p.(GroupChatCreator)
+			return ok
+		}
+	}
+	return false
+}
+
+func (e *Engine) renameGroupChat(sessionKey, newName string) {
+	platformName := extractPlatformName(sessionKey)
+	channelID := extractChannelID(sessionKey)
+	if channelID == "" {
+		slog.Debug("renameGroupChat: no channelID", "sessionKey", sessionKey)
+		return
+	}
+	slog.Info("renameGroupChat", "platform", platformName, "channel", channelID, "newName", newName)
+	for _, p := range e.platforms {
+		if p.Name() == platformName {
+			if renamer, ok := p.(GroupChatRenamer); ok {
+				if err := renamer.RenameGroupChat(e.ctx, channelID, newName); err != nil {
+					slog.Warn("rename group chat failed", "error", err, "channel", channelID)
+				}
+			}
+			return
+		}
+	}
+}
+
+func (e *Engine) renameGroupChatWithDir(sessionKey string, agent Agent, sessionName string) {
+	dirName := ""
+	if switcher, ok := agent.(WorkDirSwitcher); ok {
+		if wd := switcher.GetWorkDir(); wd != "" {
+			dirName = filepath.Base(wd)
+		}
+	}
+	date := time.Now().Format("0102")
+	var newName string
+	if dirName != "" && dirName != "." {
+		newName = "[CC" + date + "]" + dirName + "-" + sessionName
+	} else {
+		newName = "[CC" + date + "]" + sessionName
+	}
+	if len([]rune(newName)) > 60 {
+		newName = string([]rune(newName)[:60])
+	}
+	e.renameGroupChat(sessionKey, newName)
+}
+
+func (e *Engine) executeSessionGroup(sessionKey string) {
+	platformName := extractPlatformName(sessionKey)
+	var targetPlatform Platform
+	for _, p := range e.platforms {
+		if p.Name() == platformName {
+			targetPlatform = p
+			break
+		}
+	}
+	if targetPlatform == nil {
+		return
+	}
+	creator, ok := targetPlatform.(GroupChatCreator)
+	if !ok {
+		return
+	}
+
+	agent, sessions := e.sessionContextForKey(sessionKey)
+	active := sessions.GetOrCreateActive(sessionKey)
+	agentID := active.GetAgentSessionID()
+	summary := active.Name
+	if summary == "" && agentID != "" {
+		if agentSessions, err := agent.ListSessions(e.ctx); err == nil {
+			for _, s := range agentSessions {
+				if s.ID == agentID {
+					summary = s.Summary
+					break
+				}
+			}
+		}
+	}
+	if summary == "" {
+		summary = "session"
+	}
+	if len([]rune(summary)) > 30 {
+		summary = string([]rune(summary)[:30])
+	}
+
+	groupLabel := summary
+	if switcher, ok := agent.(WorkDirSwitcher); ok {
+		if wd := switcher.GetWorkDir(); wd != "" {
+			groupLabel = filepath.Base(wd)
+		}
+	}
+
+	groupName := e.nextGroupName(extractUserID(sessionKey), groupLabel)
+	userID := extractUserID(sessionKey)
+	chatID, err := creator.CreateGroupChat(e.ctx, groupName, "", userID)
+	if err != nil {
+		slog.Error("session-group: create group chat failed", "error", err, "session", sessionKey)
+		return
+	}
+	slog.Info("session-group: group created", "chatID", chatID, "session", sessionKey)
+
+	newSessionKey := platformName + ":" + chatID + ":" + userID
+	rc, ok := targetPlatform.(ReplyContextReconstructor)
+	if !ok {
+		return
+	}
+	rctx, err := rc.ReconstructReplyCtx(newSessionKey)
+	if err != nil {
+		slog.Error("session-group: reconstruct reply ctx failed", "error", err)
+		return
+	}
+
+	sessions.SwitchToAgentSession(newSessionKey, agentID, agent.Name(), summary)
+	e.send(targetPlatform, rctx, e.i18n.Tf(MsgGroupCreated, groupName))
+
+	if e.multiWorkspace && e.workspaceBindings != nil {
+		if switcher, ok := agent.(WorkDirSwitcher); ok {
+			workspace := normalizeWorkspacePath(switcher.GetWorkDir())
+			channelKey := workspaceChannelKey(platformName, chatID)
+			e.workspaceBindings.Bind("project:"+e.name, channelKey, groupName, workspace)
+		}
+	}
+}
+
+func (e *Engine) nextGroupName(userID, label string) string {
+	e.groupSeqMu.Lock()
+	e.groupSeqs[userID]++
+	e.groupSeqMu.Unlock()
+	return fmt.Sprintf("[CC%s]%s", time.Now().Format("0102"), label)
+}
+
+func (e *Engine) executeDirGroup(sessionKey string, args string) {
+	platformName := extractPlatformName(sessionKey)
+	var targetPlatform Platform
+	for _, p := range e.platforms {
+		if p.Name() == platformName {
+			targetPlatform = p
+			break
+		}
+	}
+	if targetPlatform == nil {
+		return
+	}
+	creator, ok := targetPlatform.(GroupChatCreator)
+	if !ok {
+		return
+	}
+
+	agent, _ := e.sessionContextForKey(sessionKey)
+	switcher, ok := agent.(WorkDirSwitcher)
+	if !ok {
+		return
+	}
+	currentDir := switcher.GetWorkDir()
+
+	if e.multiWorkspace && e.workspaceBindings != nil && e.projectState != nil {
+		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+		currentDir = e.resolveChannelWorkDir(currentDir, interactiveKey)
+	}
+
+	// If an index is provided, resolve the directory from history.
+	if idx, err := strconv.Atoi(strings.TrimSpace(args)); err == nil && idx >= 1 {
+		if e.dirHistory != nil {
+			history := e.dirHistory.List(e.name)
+			if idx <= len(history) {
+				currentDir = history[idx-1]
+			}
+		}
+	}
+
+	dirName := filepath.Base(currentDir)
+	if dirName == "" || dirName == "." {
+		dirName = "project"
+	}
+
+	groupName := e.nextGroupName(extractUserID(sessionKey), dirName)
+	userID := extractUserID(sessionKey)
+	chatID, err := creator.CreateGroupChat(e.ctx, groupName, "", userID)
+	if err != nil {
+		slog.Error("dir-group: create group chat failed", "error", err, "session", sessionKey)
+		return
+	}
+	slog.Info("dir-group: group created", "chatID", chatID, "dir", currentDir)
+
+	newSessionKey := platformName + ":" + chatID + ":" + userID
+	rc, ok := targetPlatform.(ReplyContextReconstructor)
+	if !ok {
+		return
+	}
+	rctx, err := rc.ReconstructReplyCtx(newSessionKey)
+	if err != nil {
+		slog.Error("dir-group: reconstruct reply ctx failed", "error", err)
+		return
+	}
+
+	e.send(targetPlatform, rctx, e.i18n.Tf(MsgGroupCreated, groupName))
+
+	if e.multiWorkspace && e.workspaceBindings != nil {
+		workspace := normalizeWorkspacePath(currentDir)
+		channelKey := workspaceChannelKey(platformName, chatID)
+		e.workspaceBindings.Bind("project:"+e.name, channelKey, groupName, workspace)
+	}
 }
 
 func workspaceChannelKey(platformName, channelID string) string {

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -218,6 +219,36 @@ type InlineButtonSender interface {
 	SendWithButtons(ctx context.Context, replyCtx any, content string, buttons [][]ButtonOption) error
 }
 
+// GroupChatCreator is an optional interface for platforms that can create
+// group chats programmatically (e.g. Feishu, DingTalk).
+type GroupChatCreator interface {
+	CreateGroupChat(ctx context.Context, name, description string, ownerUserID string) (chatID string, err error)
+}
+
+// GroupChatDissolver is an optional interface for platforms that can dissolve
+// (delete) group chats programmatically.
+type GroupChatDissolver interface {
+	DissolveGroupChat(ctx context.Context, chatID string) error
+}
+
+// GroupChatRenamer is an optional interface for platforms that can rename
+// group chats programmatically.
+type GroupChatRenamer interface {
+	RenameGroupChat(ctx context.Context, chatID, newName string) error
+}
+
+// DirEntry represents a single entry in a directory listing.
+type DirEntry struct {
+	Name  string
+	IsDir bool
+}
+
+// DirectoryLister is an optional interface for agents that can list directory
+// contents, enabling interactive directory browsing from messaging platforms.
+type DirectoryLister interface {
+	ListDirectory(ctx context.Context, path string) ([]DirEntry, error)
+}
+
 // CardSender is an optional interface for platforms that support sending
 // structured rich cards (e.g. Feishu Interactive Card). Platforms that do not
 // implement this interface will receive a plain-text fallback via Card.RenderText().
@@ -280,6 +311,13 @@ type Agent interface {
 	// ListSessions returns sessions known to the agent backend.
 	ListSessions(ctx context.Context) ([]AgentSessionInfo, error)
 	Stop() error
+}
+
+// AllSessionsLister is an optional interface for agents that can list sessions
+// across all projects, not just the current work directory. Useful for
+// multi-workspace mode where users want to see and resume any past session.
+type AllSessionsLister interface {
+	ListAllSessions(ctx context.Context) ([]AgentSessionInfo, error)
 }
 
 // AgentSession represents a running interactive agent session with a persistent process.
@@ -573,4 +611,52 @@ const (
 // updating the visual status of a preview card header.
 type PreviewStatusUpdater interface {
 	SetPreviewStatus(previewHandle any, status CardStatus)
+}
+
+// KeyInjector is an optional interface for agent sessions that can receive
+// raw terminal key sequences (e.g., Ctrl+C, arrow keys, Enter).
+// Key names follow tmux key table conventions: "C-c", "Escape", "Up", "Enter", etc.
+type KeyInjector interface {
+	InjectKey(key string) error
+}
+
+// TerminalBufferProvider is an optional interface for agent sessions that can
+// export the current terminal buffer (scrollback + visible) as plain text.
+type TerminalBufferProvider interface {
+	CaptureBuffer() (string, error)
+}
+
+// TerminalAttacher is an optional interface for agent sessions that expose
+// a raw terminal stream for web terminal attachment.
+type TerminalAttacher interface {
+	AttachTerminal() (io.ReadWriteCloser, error)
+	TerminalSize() (rows, cols int)
+	ResizeTerminal(rows, cols int) error
+}
+
+// ThreadCreator is an optional interface for platforms that can create
+// standalone anchor messages to form new threads, used for control panels.
+type ThreadCreator interface {
+	// CreateThreadAnchor sends a short message into the chat and returns its
+	// message ID, which subsequent replies will thread under.
+	CreateThreadAnchor(ctx context.Context, replyCtx any, text string) (messageID string, err error)
+	// SendCardInThread sends a card as a reply to rootMsgID (creating a thread).
+	// Returns the card message ID for later in-place refresh.
+	SendCardInThread(ctx context.Context, replyCtx any, rootMsgID string, card *Card) (messageID string, err error)
+}
+
+// MessageFetcher is an optional interface for platforms that can retrieve
+// a specific message by its platform-native ID.
+type MessageFetcher interface {
+	FetchMessage(ctx context.Context, messageID string) (*FetchedMessage, error)
+}
+
+// FetchedMessage represents a single message fetched by platform-native ID.
+type FetchedMessage struct {
+	ID        string
+	Content   string
+	Author    string
+	Timestamp time.Time
+	Images    []ImageAttachment
+	Files     []FileAttachment
 }
