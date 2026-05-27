@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -33,6 +34,18 @@ type SendRequest struct {
 	Message    string            `json:"message"`
 	Images     []ImageAttachment `json:"images,omitempty"`
 	Files      []FileAttachment  `json:"files,omitempty"`
+}
+
+// NotifyRequest is the JSON body for POST /notify.
+type NotifyRequest struct {
+	Project    string `json:"project,omitempty"`
+	SessionKey string `json:"session_key,omitempty"`
+	Cwd        string `json:"cwd,omitempty"`
+	Type       string `json:"type"`
+	Title      string `json:"title"`
+	Message    string `json:"message"`
+	ToolName   string `json:"tool_name,omitempty"`
+	ToolInput  string `json:"tool_input,omitempty"`
 }
 
 // NewAPIServer creates an API server on a Unix socket.
@@ -62,7 +75,9 @@ func NewAPIServer(dataDir string) (*APIServer, error) {
 		engines:    make(map[string]*Engine),
 	}
 	s.mux.HandleFunc("/send", s.handleSend)
+	s.mux.HandleFunc("/notify", s.handleNotify)
 	s.mux.HandleFunc("/sessions", s.handleSessions)
+	s.mux.HandleFunc("/history", s.handleHistory)
 	s.mux.HandleFunc("/cron/add", s.handleCronAdd)
 	s.mux.HandleFunc("/cron/list", s.handleCronList)
 	s.mux.HandleFunc("/cron/info", s.handleCronInfo)
@@ -173,6 +188,52 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := engine.SendToSessionWithAttachments(req.SessionKey, req.Message, req.Images, req.Files); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	apiJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *APIServer) handleNotify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req NotifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Message == "" {
+		http.Error(w, "message is required", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.RLock()
+	var engine *Engine
+	var ok bool
+	if req.Project != "" {
+		engine, ok = s.engines[req.Project]
+	} else if len(s.engines) == 1 {
+		for _, e := range s.engines {
+			engine = e
+			ok = true
+		}
+	}
+	s.mu.RUnlock()
+
+	if !ok {
+		if req.Project == "" {
+			http.Error(w, "project is required (multiple projects configured)", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, fmt.Sprintf("project %q not found", req.Project), http.StatusNotFound)
+		return
+	}
+
+	if err := engine.SendNotifyCard(req); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -501,4 +562,58 @@ func (s *APIServer) handleRelayBinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apiJSON(w, http.StatusOK, binding)
+}
+
+// handleHistory returns the conversation history for the active session
+// identified by project + session_key query params.
+// GET /history?project=<name>&session_key=<key>&n=<limit>
+func (s *APIServer) handleHistory(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	sessionKey := r.URL.Query().Get("session_key")
+	n := 0
+	if ns := r.URL.Query().Get("n"); ns != "" {
+		n, _ = strconv.Atoi(ns)
+	}
+
+	s.mu.RLock()
+	var eng *Engine
+	if project != "" {
+		eng = s.engines[project]
+	} else if len(s.engines) == 1 {
+		for _, e := range s.engines {
+			eng = e
+		}
+	}
+	s.mu.RUnlock()
+
+	if eng == nil {
+		http.Error(w, "project not found", http.StatusNotFound)
+		return
+	}
+
+	sm := eng.GetSessions()
+	if sm == nil {
+		apiJSON(w, http.StatusOK, []HistoryEntry{})
+		return
+	}
+
+	var sess *Session
+	if sessionKey != "" {
+		sess = sm.GetActive(sessionKey)
+	} else {
+		eng.interactiveMu.Lock()
+		for key := range eng.interactiveStates {
+			sess = sm.GetActive(key)
+			break
+		}
+		eng.interactiveMu.Unlock()
+	}
+
+	if sess == nil {
+		apiJSON(w, http.StatusOK, []HistoryEntry{})
+		return
+	}
+
+	history := sess.GetHistory(n)
+	apiJSON(w, http.StatusOK, history)
 }
