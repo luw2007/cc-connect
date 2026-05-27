@@ -61,7 +61,8 @@ type Agent struct {
 	// prompt for the four tool sections (send / cron / timer / relay).
 	// Empty means "use English / cc-connect default" — back-compat with
 	// callers that pre-date the language option.
-	lang core.Language
+	lang            core.Language
+	terminalBackend string // "auto" | "tmux" | "pty" — controls sidecar terminal backend
 
 	providerProxy  *core.ProviderProxy // local proxy for third-party providers
 	proxyLocalURL  string              // local URL of the proxy
@@ -213,6 +214,14 @@ func New(opts map[string]any) (core.Agent, error) {
 	routerURL, _ := opts["router_url"].(string)
 	routerAPIKey, _ := opts["router_api_key"].(string)
 
+	terminalBackend, _ := opts["terminal_backend"].(string)
+	if terminalBackend == "" {
+		terminalBackend = "auto"
+	}
+	if terminalBackend != "never" {
+		reapStaleSidecars()
+	}
+
 	// run_as_user: optional OS-user isolation. Injected into opts from
 	// the project-level config field by cmd/cc-connect/main.go.
 	spawnOpts := core.SpawnOptions{}
@@ -283,6 +292,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		activeIdx:        -1,
 		routerURL:        routerURL,
 		routerAPIKey:     routerAPIKey,
+		terminalBackend:  terminalBackend,
 		spawnOpts:        spawnOpts,
 		ccDataDir:        ccDataDir,
 
@@ -566,9 +576,10 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	// When router_url is set, --verbose conflicts with --output-format stream-json
 	// (verbose emits non-JSON text to stdout that corrupts the JSON stream).
 	disableVerbose := a.routerURL != ""
+	terminalBackend := a.terminalBackend
 	a.mu.Unlock()
 
-	return newClaudeSession(ctx, workDir, a.cmd, a.cliExtraArgs, a.cmdArgsFlag, model, effort, sessionID, mode, systemPrompt, appendSystemPrompt, tools, disTools, pluginDirs, extraEnv, platformPrompt, disableVerbose, a.spawnOpts, maxTok, a.ccDataDir, lang)
+	return newClaudeSession(ctx, workDir, a.cmd, a.cliExtraArgs, a.cmdArgsFlag, model, effort, sessionID, mode, systemPrompt, appendSystemPrompt, tools, disTools, pluginDirs, extraEnv, platformPrompt, disableVerbose, a.spawnOpts, maxTok, a.ccDataDir, lang, terminalBackend)
 }
 
 func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, error) {
