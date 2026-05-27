@@ -508,7 +508,6 @@ func main() {
 		engine.SetDataDir(cfg.DataDir)
 
 		engine.SetAgentControllers(buildExternalAgentControllers(proj.Name, proj.ExternalAgentBackends))
-
 		if proj.Notes != nil && proj.Notes.Enabled {
 			notesCfg := core.NotesConfig{
 				Enabled:                 proj.Notes.Enabled,
@@ -824,6 +823,39 @@ func main() {
 				maxTokens = 12000
 			}
 			engine.SetAutoCompressConfigWithSource(true, maxTokens, minGap, proj.AutoCompress.AllowHeuristic)
+		}
+		if proj.AutoContinue.Enabled != nil && *proj.AutoContinue.Enabled {
+			maxRounds := 3
+			if proj.AutoContinue.MaxRounds != nil {
+				maxRounds = *proj.AutoContinue.MaxRounds
+			}
+			cooldown := 5 * time.Second
+			if proj.AutoContinue.CooldownSecs != nil {
+				cooldown = time.Duration(*proj.AutoContinue.CooldownSecs) * time.Second
+			}
+			llmFallback := proj.AutoContinue.Rules.LLMFallback != nil && *proj.AutoContinue.Rules.LLMFallback
+			detector, err := core.NewAutoContinueDetector(
+				proj.AutoContinue.Rules.Keywords,
+				proj.AutoContinue.Rules.KeywordsComplete,
+				llmFallback,
+				proj.AutoContinue.Rules.LLMProvider,
+				proj.AutoContinue.Rules.LLMModel,
+			)
+			if err != nil {
+				slog.Error("auto-continue: invalid rules config", "project", proj.Name, "error", err)
+			} else {
+				engine.SetAutoContinueConfig(core.AutoContinueCfg{
+					Enabled:   true,
+					Mode:      proj.AutoContinue.Mode,
+					MaxRounds: maxRounds,
+					Cooldown:  cooldown,
+					Prompt:    proj.AutoContinue.Prompt,
+					Detector:  detector,
+				})
+				if llmFallback {
+					engine.SetLLMJudger(&cliLLMJudger{})
+				}
+			}
 		}
 		if proj.AutoContinue.Enabled != nil && *proj.AutoContinue.Enabled {
 			maxRounds := 3

@@ -287,6 +287,7 @@ const (
 	MsgProviderAddInviteHint   MsgKey = "provider_add_invite_hint"
 	MsgProviderLinkGlobal      MsgKey = "provider_link_global"
 	MsgProviderLinked          MsgKey = "provider_linked"
+	MsgUnknownCommand          MsgKey = "unknown_command"
 
 	MsgVoiceNotEnabled               MsgKey = "voice_not_enabled"
 	MsgVoiceUsingPlatformRecognition MsgKey = "voice_using_platform_recognition"

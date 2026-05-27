@@ -432,12 +432,12 @@ type AgentControlTarget struct {
 	// Title is the backend's own human label for this target (terminal
 	// title, workspace name, agent name). It identifies the window a user
 	// sees; it is never an identifier and MUST NOT be used for lookups.
-	Title        string                   `json:"title,omitempty"`
-	Directory    string                   `json:"directory,omitempty"`
-	Status       string                   `json:"status,omitempty"`
-	Description  string                   `json:"description,omitempty"`
-	LatestMessage string                  `json:"latest_message,omitempty"`
-	Capabilities []AgentControlCapability `json:"capabilities"`
+	Title         string                   `json:"title,omitempty"`
+	Directory     string                   `json:"directory,omitempty"`
+	Status        string                   `json:"status,omitempty"`
+	Description   string                   `json:"description,omitempty"`
+	LatestMessage string                   `json:"latest_message,omitempty"`
+	Capabilities  []AgentControlCapability `json:"capabilities"`
 }
 
 func (t AgentControlTarget) Supports(capability AgentControlCapability) bool {
