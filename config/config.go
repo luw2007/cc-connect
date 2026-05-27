@@ -111,6 +111,7 @@ type Config struct {
 	Bridge             BridgeConfig            `toml:"bridge"`
 	Management         ManagementConfig        `toml:"management"`
 	Hooks              []HookConfig            `toml:"hooks"`
+	SessionCard        SessionCardConfig       `toml:"session_card"`
 	IdleTimeoutMins    *int                    `toml:"idle_timeout_mins,omitempty"`  // max minutes between consecutive agent events; 0 = no timeout; default 120
 	MaxTurnTimeMins    *int                    `toml:"max_turn_time_mins,omitempty"` // absolute wall-clock cap per turn in minutes; 0 = disabled (default)
 	// WorkspaceIdleTimeoutMins controls the workspace idle reaper timeout
@@ -181,6 +182,12 @@ type ManagementConfig struct {
 	Port        int      `toml:"port,omitempty"`         // listen port; default 9820
 	Token       string   `toml:"token,omitempty"`        // shared secret for authentication; required
 	CORSOrigins []string `toml:"cors_origins,omitempty"` // allowed CORS origins; empty = no CORS
+}
+
+// SessionCardConfig controls the interactive session action card.
+type SessionCardConfig struct {
+	ShowQuickKeys  *bool `toml:"show_quick_keys"`   // show key injection buttons; default true
+	ShowTermButton *bool `toml:"show_terminal_btn"` // show "Open Terminal" button; default true
 }
 
 // Display mode constants.
@@ -452,6 +459,25 @@ type AutoCompressConfig struct {
 	MinGapMins *int  `toml:"min_gap_mins,omitempty"` // minimum minutes between auto-compress runs (default 30)
 }
 
+// AutoContinueConfig controls automatic follow-up when an agent turn ends inconclusively.
+type AutoContinueConfig struct {
+	Enabled      *bool             `toml:"enabled,omitempty"`
+	Mode         string            `toml:"mode,omitempty"`          // "auto" or "notify"; default "auto"
+	MaxRounds    *int              `toml:"max_rounds,omitempty"`    // cap on consecutive auto-continues; default 3
+	CooldownSecs *int              `toml:"cooldown_secs,omitempty"` // delay between rounds; default 5
+	Prompt       string            `toml:"prompt,omitempty"`        // follow-up message sent to agent
+	Rules        AutoContinueRules `toml:"rules"`
+}
+
+// AutoContinueRules defines keyword patterns and LLM fallback for completion detection.
+type AutoContinueRules struct {
+	Keywords         []string `toml:"keywords,omitempty"`          // regex patterns indicating incompleteness
+	KeywordsComplete []string `toml:"keywords_complete,omitempty"` // regex patterns indicating completion
+	LLMFallback      *bool    `toml:"llm_fallback,omitempty"`      // use LLM when rules inconclusive; default false
+	LLMProvider      string   `toml:"llm_provider,omitempty"`
+	LLMModel         string   `toml:"llm_model,omitempty"`
+}
+
 // ObserveConfig controls forwarding of native terminal Claude Code sessions to a messaging platform.
 type ObserveConfig struct {
 	Enabled bool   `toml:"enabled"`
@@ -465,6 +491,16 @@ type ReferenceConfig struct {
 	DisplayPath     string   `toml:"display_path,omitempty"`
 	MarkerStyle     string   `toml:"marker_style,omitempty"`
 	EnclosureStyle  string   `toml:"enclosure_style,omitempty"`
+}
+
+type NotesConfig struct {
+	Enabled                 bool   `toml:"enabled"`
+	Model                   string `toml:"model"`
+	APIKey                  string `toml:"api_key"`
+	BaseURL                 string `toml:"base_url"`
+	ExtractionPrompt        string `toml:"extraction_prompt"`
+	ConfirmationTimeoutMins int    `toml:"confirmation_timeout_mins"`
+	MaxMemoriesPerSession   int    `toml:"max_memories_per_session"`
 }
 
 // ProjectConfig binds one agent (with a specific work_dir) to one or more platforms.
@@ -482,6 +518,7 @@ type ProjectConfig struct {
 	Platforms                    []PlatformConfig   `toml:"platforms"`
 	Heartbeat                    HeartbeatConfig    `toml:"heartbeat"`
 	AutoCompress                 AutoCompressConfig `toml:"auto_compress"`
+	AutoContinue                 AutoContinueConfig `toml:"auto_continue"`
 	// ResetOnIdleMins automatically rotates to a new cc-connect session after
 	// the current session has been inactive for the specified number of minutes.
 	// 0 or nil disables the behavior.
@@ -547,7 +584,8 @@ type ProjectConfig struct {
 	// FilterExternalSessions: when true, /list only shows sessions created by
 	// cc-connect, hiding sessions created by direct CLI usage in the same work_dir.
 	// Default is false (show all sessions).
-	FilterExternalSessions *bool `toml:"filter_external_sessions,omitempty"`
+	FilterExternalSessions *bool        `toml:"filter_external_sessions,omitempty"`
+	Notes                  *NotesConfig `toml:"notes,omitempty"`
 	// Shell overrides the global shell for this project. See Config.Shell.
 	Shell string `toml:"shell,omitempty"`
 	// ShellProfile overrides the global shell_profile for this project.

@@ -238,6 +238,75 @@ func main() {
 		return
 	}
 
+	// Handle subcommands before flag parsing
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "config-example":
+			fmt.Print(ccconnect.ConfigExampleTOML)
+			return
+		case "config":
+			runConfig(os.Args[2:])
+			return
+		case "update":
+			runUpdate()
+			return
+		case "check-update":
+			checkUpdate()
+			return
+		case "provider":
+			runProviderCommand(os.Args[2:])
+			return
+		case "send":
+			runSend(os.Args[2:])
+			return
+		case "notify":
+			runNotify(os.Args[2:])
+			return
+		case "cron":
+			runCron(os.Args[2:])
+			return
+		case "timer", "at":
+			runTimer(os.Args[2:])
+			return
+		case "relay":
+			runRelay(os.Args[2:])
+			return
+		case "sessions":
+			runSessions(os.Args[2:])
+			return
+		case "history":
+			runHistory(os.Args[2:])
+			return
+		case "quoted":
+			runQuoted(os.Args[2:])
+			return
+		case "agent-sid":
+			runAgentSID(os.Args[2:])
+			return
+		case "daemon":
+			runDaemon(os.Args[2:])
+			return
+		case "feishu":
+			runFeishu(os.Args[2:])
+			return
+		case "tuitui":
+			runTuiTui(os.Args[2:])
+			return
+		case "weixin":
+			runWeixin(os.Args[2:])
+			return
+		case "yuanbao":
+			runYuanbao(os.Args[2:])
+			return
+		case "doctor":
+			runDoctor(os.Args[2:])
+			return
+		case "web":
+			runWeb(os.Args[2:])
+			return
+		}
+	}
+
 	checkUpdateAsync()
 	// When started as a daemon (CC_LOG_FILE set), redirect logs to a rotating file.
 	// Log file setup happens before flag.Parse() so the rotating writer is in
@@ -434,6 +503,22 @@ func main() {
 		engine.SetBaseWorkDir(workDir)
 		engine.SetProjectStateStore(projectState)
 		engine.SetDataDir(cfg.DataDir)
+
+		if proj.Notes != nil && proj.Notes.Enabled {
+			notesCfg := core.NotesConfig{
+				Enabled:                 proj.Notes.Enabled,
+				Model:                   proj.Notes.Model,
+				APIKey:                  proj.Notes.APIKey,
+				BaseURL:                 proj.Notes.BaseURL,
+				ExtractionPrompt:        proj.Notes.ExtractionPrompt,
+				ConfirmationTimeoutMins: proj.Notes.ConfirmationTimeoutMins,
+				MaxMemoriesPerSession:   proj.Notes.MaxMemoriesPerSession,
+			}
+			memStorage := core.NewMemoryStorage(filepath.Join(cfg.DataDir, "memories"))
+			me := core.NewMemoryExtractor(notesCfg, memStorage)
+			engine.SetMemoryExtractor(me)
+			go me.StartCleanup(context.Background())
+		}
 
 		// Wire multi-workspace mode
 		if proj.Mode == "multi-workspace" {
@@ -703,6 +788,39 @@ func main() {
 				maxTokens = 12000
 			}
 			engine.SetAutoCompressConfig(true, maxTokens, minGap)
+		}
+		if proj.AutoContinue.Enabled != nil && *proj.AutoContinue.Enabled {
+			maxRounds := 3
+			if proj.AutoContinue.MaxRounds != nil {
+				maxRounds = *proj.AutoContinue.MaxRounds
+			}
+			cooldown := 5 * time.Second
+			if proj.AutoContinue.CooldownSecs != nil {
+				cooldown = time.Duration(*proj.AutoContinue.CooldownSecs) * time.Second
+			}
+			llmFallback := proj.AutoContinue.Rules.LLMFallback != nil && *proj.AutoContinue.Rules.LLMFallback
+			detector, err := core.NewAutoContinueDetector(
+				proj.AutoContinue.Rules.Keywords,
+				proj.AutoContinue.Rules.KeywordsComplete,
+				llmFallback,
+				proj.AutoContinue.Rules.LLMProvider,
+				proj.AutoContinue.Rules.LLMModel,
+			)
+			if err != nil {
+				slog.Error("auto-continue: invalid rules config", "project", proj.Name, "error", err)
+			} else {
+				engine.SetAutoContinueConfig(core.AutoContinueCfg{
+					Enabled:   true,
+					Mode:      proj.AutoContinue.Mode,
+					MaxRounds: maxRounds,
+					Cooldown:  cooldown,
+					Prompt:    proj.AutoContinue.Prompt,
+					Detector:  detector,
+				})
+				if llmFallback {
+					engine.SetLLMJudger(&cliLLMJudger{})
+				}
+			}
 		}
 		resetIdle, defaulted := resolveResetOnIdle(proj.ResetOnIdleMins)
 		engine.SetResetOnIdle(resetIdle)
@@ -1785,6 +1903,41 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 		engine.SetAutoCompressConfig(true, maxTokens, minGap)
 	} else {
 		engine.SetAutoCompressConfig(false, 0, 0)
+	}
+	if proj.AutoContinue.Enabled != nil && *proj.AutoContinue.Enabled {
+		maxRounds := 3
+		if proj.AutoContinue.MaxRounds != nil {
+			maxRounds = *proj.AutoContinue.MaxRounds
+		}
+		cooldown := 5 * time.Second
+		if proj.AutoContinue.CooldownSecs != nil {
+			cooldown = time.Duration(*proj.AutoContinue.CooldownSecs) * time.Second
+		}
+		llmFallback := proj.AutoContinue.Rules.LLMFallback != nil && *proj.AutoContinue.Rules.LLMFallback
+		detector, err := core.NewAutoContinueDetector(
+			proj.AutoContinue.Rules.Keywords,
+			proj.AutoContinue.Rules.KeywordsComplete,
+			llmFallback,
+			proj.AutoContinue.Rules.LLMProvider,
+			proj.AutoContinue.Rules.LLMModel,
+		)
+		if err != nil {
+			slog.Error("auto-continue: invalid rules config on reload", "project", proj.Name, "error", err)
+		} else {
+			engine.SetAutoContinueConfig(core.AutoContinueCfg{
+				Enabled:   true,
+				Mode:      proj.AutoContinue.Mode,
+				MaxRounds: maxRounds,
+				Cooldown:  cooldown,
+				Prompt:    proj.AutoContinue.Prompt,
+				Detector:  detector,
+			})
+			if llmFallback {
+				engine.SetLLMJudger(&cliLLMJudger{})
+			}
+		}
+	} else {
+		engine.SetAutoContinueConfig(core.AutoContinueCfg{Enabled: false})
 	}
 	resetIdle, defaulted := resolveResetOnIdle(proj.ResetOnIdleMins)
 	engine.SetResetOnIdle(resetIdle)
