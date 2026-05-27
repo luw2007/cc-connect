@@ -64,6 +64,8 @@ func (ws *WebhookServer) RegisterEngine(name string, e *Engine) {
 func (ws *WebhookServer) Start() {
 	mux := http.NewServeMux()
 	mux.HandleFunc(ws.path, ws.handleHook)
+	mux.HandleFunc(ws.path+"/permission", ws.handlePermission)
+	mux.HandleFunc(ws.path+"/notify", ws.handleNotify)
 
 	addr := fmt.Sprintf(":%d", ws.port)
 	ws.server = &http.Server{Addr: addr, Handler: mux}
@@ -331,4 +333,187 @@ func (ws *WebhookServer) executeShell(engine *Engine, req WebhookRequest, event 
 	}
 
 	slog.Info("webhook: shell executed", "event", event, "session_key", sessionKey, "success", execErr == nil)
+}
+
+func (ws *WebhookServer) handlePermission(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !ws.authenticate(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req ExternalPermissionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ToolName == "" {
+		http.Error(w, "tool_name is required", http.StatusBadRequest)
+		return
+	}
+	if req.Cwd == "" && req.SessionKey == "" {
+		http.Error(w, "cwd or session_key is required", http.StatusBadRequest)
+		return
+	}
+
+	engine, err := ws.resolveEngine(req.Project)
+	if err != nil {
+		webhookWriteJSON(w, http.StatusBadRequest, ExternalPermissionResponse{Status: "error", Error: err.Error()})
+		return
+	}
+
+	sessionKey, targetPlatform, replyCtx, err := ws.resolvePermissionTarget(engine, req)
+	if err != nil {
+		webhookWriteJSON(w, http.StatusBadRequest, ExternalPermissionResponse{Status: "error", Error: err.Error()})
+		return
+	}
+
+	timeout := defaultPermissionTimeout
+	if req.Timeout > 0 {
+		timeout = time.Duration(req.Timeout) * time.Second
+	}
+
+	ep := &externalPendingPermission{
+		RequestID:  generateRequestID(),
+		ToolName:   req.ToolName,
+		ToolInput:  req.ToolInput,
+		ChannelKey: sessionKey,
+		CreatedAt:  time.Now(),
+		Resolved:   make(chan struct{}),
+	}
+
+	engine.RegisterExternalPermission(ep, targetPlatform, replyCtx)
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-ep.Resolved:
+		webhookWriteJSON(w, http.StatusOK, ExternalPermissionResponse{
+			Status:   "resolved",
+			Decision: ep.Decision,
+		})
+	case <-timer.C:
+		engine.externalPermMu.Lock()
+		delete(engine.externalPermissions, ep.RequestID)
+		engine.externalPermMu.Unlock()
+		slog.Warn("webhook: permission timeout", "request_id", ep.RequestID, "tool", ep.ToolName)
+		webhookWriteJSON(w, http.StatusOK, ExternalPermissionResponse{Status: "timeout"})
+	case <-r.Context().Done():
+		engine.externalPermMu.Lock()
+		delete(engine.externalPermissions, ep.RequestID)
+		engine.externalPermMu.Unlock()
+		slog.Info("webhook: permission client disconnected", "request_id", ep.RequestID)
+	}
+}
+
+func (ws *WebhookServer) handleNotify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !ws.authenticate(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req ExternalNotifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Message == "" {
+		http.Error(w, "message is required", http.StatusBadRequest)
+		return
+	}
+
+	engine, err := ws.resolveEngine(req.Project)
+	if err != nil {
+		webhookWriteJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "error": err.Error()})
+		return
+	}
+
+	sessionKey := req.SessionKey
+	if sessionKey == "" && req.Cwd != "" {
+		if sk, err := ws.resolveSessionKeyByWorkspace(engine, req.Cwd); err == nil {
+			sessionKey = sk
+		}
+	}
+	if sessionKey == "" {
+		webhookWriteJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "error": "cannot determine target session"})
+		return
+	}
+
+	targetPlatform, replyCtx, err := ws.resolvePlatformAndReplyCtx(engine, sessionKey)
+	if err != nil {
+		webhookWriteJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "error": err.Error()})
+		return
+	}
+
+	prefix := engine.i18n.T(MsgExtNotifyPrefix)
+	go engine.send(targetPlatform, replyCtx, prefix+req.Message)
+
+	webhookWriteJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+}
+
+func (ws *WebhookServer) resolvePermissionTarget(engine *Engine, req ExternalPermissionRequest) (sessionKey string, p Platform, replyCtx any, err error) {
+	sessionKey = req.SessionKey
+	if sessionKey == "" {
+		sessionKey, err = ws.resolveSessionKeyByWorkspace(engine, req.Cwd)
+		if err != nil {
+			return "", nil, nil, err
+		}
+	}
+	p, replyCtx, err = ws.resolvePlatformAndReplyCtx(engine, sessionKey)
+	return
+}
+
+func (ws *WebhookServer) resolveSessionKeyByWorkspace(engine *Engine, cwd string) (string, error) {
+	if engine.workspaceBindings == nil {
+		return "", fmt.Errorf("no workspace bindings configured")
+	}
+	matches := engine.workspaceBindings.LookupByWorkspace(normalizeWorkspacePath(cwd))
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no channel binding for workspace %q", cwd)
+	}
+	channelKey := matches[0].ChannelKey
+	return channelKey, nil
+}
+
+func (ws *WebhookServer) resolvePlatformAndReplyCtx(engine *Engine, sessionKey string) (Platform, any, error) {
+	platformName := ""
+	if idx := strings.Index(sessionKey, ":"); idx > 0 {
+		platformName = sessionKey[:idx]
+	}
+
+	var targetPlatform Platform
+	for _, p := range engine.platforms {
+		if p.Name() == platformName {
+			targetPlatform = p
+			break
+		}
+	}
+	if targetPlatform == nil {
+		return nil, nil, fmt.Errorf("platform %q not found", platformName)
+	}
+
+	rc, ok := targetPlatform.(ReplyContextReconstructor)
+	if !ok {
+		return nil, nil, fmt.Errorf("platform %q does not support proactive messaging", platformName)
+	}
+
+	replyCtx, err := rc.ReconstructReplyCtx(sessionKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reconstruct reply context: %w", err)
+	}
+	return targetPlatform, replyCtx, nil
+}
+
+func webhookWriteJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }
