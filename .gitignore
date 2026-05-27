@@ -141,3 +141,5 @@ secrets/
 credentials/
 
 .codex
+.omc/
+.wolf/
