@@ -2930,7 +2930,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	// Auto-unmute when user sends a message
 	e.mutedSessions.Delete(msg.SessionKey)
 
-	ctx := WithTrace(context.Background(), TraceContext{
+	ctx := WithTrace(context.Background(), &TraceContext{
 		SessionKey: msg.SessionKey,
 		Platform:   msg.Platform,
 		UserID:     msg.UserID,
@@ -6511,7 +6511,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 			stopTyping = ti.StartTyping(e.ctx, queued.replyCtx)
 		}
 
-		qctx := WithTrace(context.Background(), TraceContext{
+		qctx := WithTrace(context.Background(), &TraceContext{
 			SessionKey: sessionKey,
 			Platform:   queued.msgPlatform,
 			UserID:     queued.userID,
@@ -15930,7 +15930,7 @@ func (e *Engine) executeCustomCommand(p Platform, msg *Message, cmd *CustomComma
 	)
 
 	msg.Content = prompt
-	tctx := WithTrace(context.Background(), TraceContext{
+	tctx := WithTrace(context.Background(), &TraceContext{
 		SessionKey: msg.SessionKey,
 		Platform:   msg.Platform,
 		UserID:     msg.UserID,
@@ -16169,7 +16169,7 @@ func (e *Engine) executeSkill(p Platform, msg *Message, skill *Skill, args []str
 	)
 
 	msg.Content = prompt
-	tctx := WithTrace(context.Background(), TraceContext{
+	tctx := WithTrace(context.Background(), &TraceContext{
 		SessionKey: msg.SessionKey,
 		Platform:   msg.Platform,
 		UserID:     msg.UserID,
