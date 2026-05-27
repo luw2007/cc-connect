@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"regexp"
@@ -432,4 +433,70 @@ func extractNew(baseline, current string) string {
 	}
 
 	return current
+}
+
+// InjectKey sends a raw key name to the tmux pane without literal mode,
+// allowing tmux to interpret it (e.g., "C-c", "Escape", "Up", "Enter").
+func (s *tmuxSession) InjectKey(key string) error {
+	if !s.alive.Load() {
+		return fmt.Errorf("tmux: session not alive")
+	}
+	out, err := exec.Command("tmux", "send-keys", "-t", s.target, key).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux: inject key %q: %w: %s", key, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// CaptureBuffer returns the full terminal buffer (scrollback + visible pane).
+func (s *tmuxSession) CaptureBuffer() (string, error) {
+	if !s.alive.Load() {
+		return "", fmt.Errorf("tmux: session not alive")
+	}
+	return captureScrollback(s.target)
+}
+
+// AttachTerminal opens a raw pty pipe to the tmux pane via `tmux attach-session`
+// and returns it as an io.ReadWriteCloser for WebSocket proxying.
+func (s *tmuxSession) AttachTerminal() (io.ReadWriteCloser, error) {
+	if !s.alive.Load() {
+		return nil, fmt.Errorf("tmux: session not alive")
+	}
+	// Use `tmux pipe-pane` to stream pane output; pair with a named pipe for input.
+	// Simpler approach: run `tmux attach-session -t <target>` inside a pty.
+	// We use creack/pty if available; fall back to a pipe-based approach.
+	return newTmuxPipe(s.target)
+}
+
+// TerminalSize returns the current rows/cols of the tmux pane.
+func (s *tmuxSession) TerminalSize() (rows, cols int) {
+	out, err := exec.Command("tmux", "display-message", "-t", s.target, "-p", "#{pane_height} #{pane_width}").Output()
+	if err != nil {
+		return 24, 80
+	}
+	parts := strings.Fields(strings.TrimSpace(string(out)))
+	if len(parts) == 2 {
+		_, _ = fmt.Sscan(parts[0], &rows)
+		_, _ = fmt.Sscan(parts[1], &cols)
+	}
+	if rows == 0 {
+		rows = 24
+	}
+	if cols == 0 {
+		cols = 80
+	}
+	return rows, cols
+}
+
+// ResizeTerminal resizes the tmux window/pane.
+func (s *tmuxSession) ResizeTerminal(rows, cols int) error {
+	if !s.alive.Load() {
+		return fmt.Errorf("tmux: session not alive")
+	}
+	out, err := exec.Command("tmux", "resize-window", "-t", s.target,
+		"-x", fmt.Sprintf("%d", cols), "-y", fmt.Sprintf("%d", rows)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux: resize %dx%d: %w: %s", cols, rows, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
