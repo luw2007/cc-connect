@@ -128,6 +128,7 @@ type Platform struct {
 	respondToAtEveryoneAndHere bool
 	shareSessionInChannel      bool
 	threadIsolation            bool
+	replyInThread              bool
 	// noReplyToTrigger: when true, send via Create instead of Im.Message.Reply (no quote to the user's message).
 	noReplyToTrigger bool
 	resolveMentions  bool
@@ -208,6 +209,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	respondToAtEveryoneAndHere, _ := opts["respond_to_at_everyone_and_here"].(bool)
 	shareSessionInChannel, _ := opts["share_session_in_channel"].(bool)
 	threadIsolation, _ := opts["thread_isolation"].(bool)
+	replyInThread, _ := opts["reply_in_thread"].(bool)
 	resolveMentionsOpt, _ := opts["resolve_mentions"].(bool)
 	noReplyToTrigger := false
 	if v, ok := opts["reply_to_trigger"].(bool); ok && !v {
@@ -271,6 +273,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		respondToAtEveryoneAndHere: respondToAtEveryoneAndHere,
 		shareSessionInChannel:      shareSessionInChannel,
 		threadIsolation:            threadIsolation,
+		replyInThread:              replyInThread,
 		resolveMentions:            resolveMentionsOpt,
 		noReplyToTrigger:           noReplyToTrigger,
 		client:                     lark.NewClient(appID, appSecret, clientOpts...),
@@ -2828,7 +2831,13 @@ func (p *Platform) shouldReplyInThread(rc replyContext) bool {
 	if rc.messageID == "" {
 		return false
 	}
-	return p.threadIsolation && isThreadSessionKey(rc.sessionKey)
+	if p.threadIsolation && isThreadSessionKey(rc.sessionKey) {
+		return true
+	}
+	if p.replyInThread && strings.HasPrefix(rc.chatID, "oc_") {
+		return true
+	}
+	return false
 }
 
 // shouldUseThreadOrReplyAPI is true when we should call Im.Message.Reply (optionally with ReplyInThread).
@@ -2896,6 +2905,83 @@ func (p *Platform) createMessage(ctx context.Context, chatID, msgType, content, 
 			return nil
 		})
 	})
+}
+
+// CreateThreadAnchor sends a text message into the chat and returns its message ID.
+// This message becomes the root of a new thread.
+func (p *Platform) CreateThreadAnchor(ctx context.Context, replyCtx any, text string) (string, error) {
+	rc, ok := replyCtx.(replyContext)
+	if !ok {
+		return "", fmt.Errorf("%s: invalid reply context type %T", p.tag(), replyCtx)
+	}
+	if rc.chatID == "" {
+		return "", fmt.Errorf("%s: chatID is empty", p.tag())
+	}
+
+	content := fmt.Sprintf(`{"text":"%s"}`, text)
+	req := larkim.NewCreateMessageReqBuilder().
+		ReceiveIdType(larkim.ReceiveIdTypeChatId).
+		Body(larkim.NewCreateMessageReqBodyBuilder().
+			ReceiveId(rc.chatID).
+			MsgType(larkim.MsgTypeText).
+			Content(content).
+			Build()).
+		Build()
+
+	var msgID string
+	err := p.withTransientRetry(ctx, "create thread anchor", func() error {
+		return p.withFreshTenantAccessTokenRetry(ctx, "create thread anchor", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+			resp, err := client.Im.Message.Create(ctx, req, options...)
+			if err != nil {
+				return fmt.Errorf("%s: create thread anchor api call: %w", p.tag(), err)
+			}
+			if !resp.Success() {
+				return fmt.Errorf("%s: create thread anchor failed code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+			}
+			if resp.Data != nil && resp.Data.MessageId != nil {
+				msgID = *resp.Data.MessageId
+			}
+			return nil
+		})
+	})
+	return msgID, err
+}
+
+// SendCardInThread sends a card as a threaded reply to rootMsgID and returns the card's message ID.
+func (p *Platform) SendCardInThread(ctx context.Context, replyCtx any, rootMsgID string, card *core.Card) (string, error) {
+	rc, ok := replyCtx.(replyContext)
+	if !ok {
+		return "", fmt.Errorf("%s: invalid reply context type %T", p.tag(), replyCtx)
+	}
+
+	cardJSON := renderCard(card, rc.sessionKey)
+	body := larkim.NewReplyMessageReqBodyBuilder().
+		MsgType(larkim.MsgTypeInteractive).
+		Content(cardJSON).
+		ReplyInThread(true).
+		Build()
+	req := larkim.NewReplyMessageReqBuilder().
+		MessageId(rootMsgID).
+		Body(body).
+		Build()
+
+	var msgID string
+	err := p.withTransientRetry(ctx, "send card in thread", func() error {
+		return p.withFreshTenantAccessTokenRetry(ctx, "send card in thread", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+			resp, err := client.Im.Message.Reply(ctx, req, options...)
+			if err != nil {
+				return fmt.Errorf("%s: send card in thread api call: %w", p.tag(), err)
+			}
+			if !resp.Success() {
+				return fmt.Errorf("%s: send card in thread failed code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+			}
+			if resp.Data != nil && resp.Data.MessageId != nil {
+				msgID = *resp.Data.MessageId
+			}
+			return nil
+		})
+	})
+	return msgID, err
 }
 
 func (p *Platform) withFreshTenantAccessTokenRetry(ctx context.Context, operation string, fn feishuRequestFunc) error {
@@ -3635,6 +3721,57 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 			return nil
 		})
 	})
+}
+
+func (p *Platform) CreateGroupChat(ctx context.Context, name, description string, ownerUserID string) (string, error) {
+	body := larkim.NewCreateChatReqBodyBuilder().
+		Name(name).
+		Description(description).
+		ChatMode("group").
+		ChatType("private")
+	if ownerUserID != "" {
+		body = body.OwnerId(ownerUserID)
+	}
+	req := larkim.NewCreateChatReqBuilder().
+		UserIdType("open_id").
+		SetBotManager(true).
+		Body(body.Build()).
+		Build()
+
+	resp, err := p.client.Im.Chat.Create(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("feishu: create group chat: %w", err)
+	}
+	if !resp.Success() {
+		return "", fmt.Errorf("feishu: create group chat: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return *resp.Data.ChatId, nil
+}
+
+func (p *Platform) DissolveGroupChat(ctx context.Context, chatID string) error {
+	req := larkim.NewDeleteChatReqBuilder().ChatId(chatID).Build()
+	resp, err := p.client.Im.Chat.Delete(ctx, req)
+	if err != nil {
+		return fmt.Errorf("feishu: dissolve group: %w", err)
+	}
+	if !resp.Success() {
+		return fmt.Errorf("feishu: dissolve group: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return nil
+}
+
+func (p *Platform) RenameGroupChat(ctx context.Context, chatID, newName string) error {
+	body := larkim.NewUpdateChatReqBodyBuilder().Name(newName).Build()
+	req := larkim.NewUpdateChatReqBuilder().ChatId(chatID).Body(body).Build()
+	resp, err := p.client.Im.Chat.Update(ctx, req)
+	if err != nil {
+		return fmt.Errorf("feishu: rename group chat: %w", err)
+	}
+	if !resp.Success() {
+		return fmt.Errorf("feishu: rename group chat: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	p.chatNameCache.Store(chatID, newName)
+	return nil
 }
 
 func (p *Platform) Stop() error {
