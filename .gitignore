@@ -153,3 +153,5 @@ credentials/
 
 .codex
 cc-connect-new
+.omc/
+.wolf/
