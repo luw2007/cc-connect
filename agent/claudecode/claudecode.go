@@ -51,6 +51,7 @@ type Agent struct {
 	routerURL        string // Claude Code Router URL (e.g., "http://127.0.0.1:3456")
 	routerAPIKey     string // Claude Code Router API key (optional)
 	systemPrompt     string // Custom system prompt to pass to Claude CLI
+	terminalBackend  string // "auto" | "tmux" | "pty" — controls sidecar terminal backend
 
 	providerProxy  *core.ProviderProxy // local proxy for third-party providers
 	proxyLocalURL  string              // local URL of the proxy
@@ -173,6 +174,11 @@ func New(opts map[string]any) (core.Agent, error) {
 	routerURL, _ := opts["router_url"].(string)
 	routerAPIKey, _ := opts["router_api_key"].(string)
 
+	terminalBackend, _ := opts["terminal_backend"].(string)
+	if terminalBackend == "" {
+		terminalBackend = "auto"
+	}
+
 	// run_as_user: optional OS-user isolation. Injected into opts from
 	// the project-level config field by cmd/cc-connect/main.go.
 	spawnOpts := core.SpawnOptions{}
@@ -227,6 +233,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		activeIdx:        -1,
 		routerURL:        routerURL,
 		routerAPIKey:     routerAPIKey,
+		terminalBackend:  terminalBackend,
 		spawnOpts:        spawnOpts,
 	}, nil
 }
@@ -454,9 +461,10 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	// When router_url is set, --verbose conflicts with --output-format stream-json
 	// (verbose emits non-JSON text to stdout that corrupts the JSON stream).
 	disableVerbose := a.routerURL != ""
+	terminalBackend := a.terminalBackend
 	a.mu.Unlock()
 
-	return newClaudeSession(ctx, workDir, a.cliBin, a.cliExtraArgs, a.cliArgsFlag, model, effort, sessionID, mode, systemPrompt, tools, disTools, extraEnv, platformPrompt, disableVerbose, a.spawnOpts, maxTok)
+	return newClaudeSession(ctx, workDir, a.cliBin, a.cliExtraArgs, a.cliArgsFlag, model, effort, sessionID, mode, systemPrompt, tools, disTools, extraEnv, platformPrompt, disableVerbose, a.spawnOpts, maxTok, terminalBackend)
 }
 
 func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, error) {

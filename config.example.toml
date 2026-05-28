@@ -817,6 +817,10 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # router_url = "http://127.0.0.1:3456"  # Claude Code Router URL (default: http://127.0.0.1:3456)
 # router_api_key = "your-router-api-key" # Optional: API key if router requires authentication / 可选：如果 router 需要认证
 #
+# Terminal backend for sidecar pane: "auto" (default), "tmux", or "pty"
+# 侧边栏终端后端："auto"（默认）、"tmux" 或 "pty"
+# terminal_backend = "auto"
+#
 # When router_url is set, cc-connect will automatically:
 # 设置 router_url 后，cc-connect 会自动：
 #   - Set ANTHROPIC_BASE_URL to router_url

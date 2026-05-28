@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chenhg5/cc-connect/agent/tmux"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -49,9 +50,13 @@ type claudeSession struct {
 	// Stop hook timeout. The wait ends as soon as the process exits,
 	// so typical shutdowns take seconds, not the full timeout.
 	gracefulStopTimeout time.Duration
+
+	// tmux sidecar fields — populated by wiring layer when terminal_backend = "tmux"
+	tmuxSession string         // tmux session target (e.g. "cc-abc123")
+	paneEvents  chan core.Event // mirror of events, written by sidecar forwarder
 }
 
-func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs []string, cliArgsFlag string, model, effort, sessionID, mode, systemPrompt string, allowedTools, disallowedTools []string, extraEnv []string, platformPrompt string, disableVerbose bool, spawnOpts core.SpawnOptions, maxContextTokens int) (*claudeSession, error) {
+func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs []string, cliArgsFlag string, model, effort, sessionID, mode, systemPrompt string, allowedTools, disallowedTools []string, extraEnv []string, platformPrompt string, disableVerbose bool, spawnOpts core.SpawnOptions, maxContextTokens int, terminalBackend string) (*claudeSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	// innerArgs are Claude Code CLI flags — when a wrapper is used with
@@ -214,6 +219,14 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	cs.sessionID.Store(sessionID)
 	cs.alive.Store(true)
 
+	if !spawnOpts.IsolationMode() && (terminalBackend == "tmux" || (terminalBackend == "auto" && tmuxAvailable())) {
+		if name, err := createSidecarPane(sessionID); err == nil {
+			cs.tmuxSession = name
+			cs.paneEvents = make(chan core.Event, 64)
+			go cs.renderToPane(sessionCtx)
+		}
+	}
+
 	go cs.readLoop(stdout, &stderrBuf)
 
 	return cs, nil
@@ -276,13 +289,10 @@ func (cs *claudeSession) finishReadLoop(waitErrCh <-chan error, stderrBuf *bytes
 		if stderrMsg != "" {
 			slog.Error("claudeSession: process failed", "error", err, "stderr", stderrMsg)
 			evt := core.Event{Type: core.EventError, Error: fmt.Errorf("%s", stderrMsg)}
-			select {
-			case cs.events <- evt:
-			case <-cs.ctx.Done():
-				// INVARIANT: readLoop must close cs.events and cs.done exactly once
-				// on every termination path. Callers (engine event loop) rely on
-				// these closures to observe session end.
-			}
+			// INVARIANT: readLoop must close cs.events and cs.done exactly once
+			// on every termination path. Callers (engine event loop) rely on
+			// these closures to observe session end.
+			cs.sendEvent(evt)
 		}
 	}
 	close(cs.events)
@@ -304,10 +314,21 @@ func (cs *claudeSession) handleReadLoopScanErr(err error, waitDone <-chan struct
 
 	slog.Error("claudeSession: scanner error", "error", err)
 	evt := core.Event{Type: core.EventError, Error: fmt.Errorf("read stdout: %w", err)}
+	cs.sendEvent(evt)
+}
+
+func (cs *claudeSession) sendEvent(evt core.Event) bool {
+	if cs.paneEvents != nil {
+		select {
+		case cs.paneEvents <- evt:
+		default:
+		}
+	}
 	select {
 	case cs.events <- evt:
+		return true
 	case <-cs.ctx.Done():
-		return
+		return false
 	}
 }
 
@@ -346,11 +367,7 @@ func (cs *claudeSession) handleSystem(raw map[string]any) {
 	if sid, ok := raw["session_id"].(string); ok && sid != "" {
 		cs.sessionID.Store(sid)
 		evt := core.Event{Type: core.EventText, SessionID: sid}
-		select {
-		case cs.events <- evt:
-		case <-cs.ctx.Done():
-			return
-		}
+		cs.sendEvent(evt)
 	}
 }
 
@@ -377,26 +394,20 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			}
 			inputSummary := summarizeInput(toolName, item["input"])
 			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary}
-			select {
-			case cs.events <- evt:
-			case <-cs.ctx.Done():
+			if !cs.sendEvent(evt) {
 				return
 			}
 		case "thinking":
 			if thinking, ok := item["thinking"].(string); ok && thinking != "" {
 				evt := core.Event{Type: core.EventThinking, Content: thinking}
-				select {
-				case cs.events <- evt:
-				case <-cs.ctx.Done():
+				if !cs.sendEvent(evt) {
 					return
 				}
 			}
 		case "text":
 			if text, ok := item["text"].(string); ok && text != "" {
 				evt := core.Event{Type: core.EventText, Content: text}
-				select {
-				case cs.events <- evt:
-				case <-cs.ctx.Done():
+				if !cs.sendEvent(evt) {
 					return
 				}
 			}
@@ -456,11 +467,7 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 	}
-	select {
-	case cs.events <- evt:
-	case <-cs.ctx.Done():
-		return
-	}
+	cs.sendEvent(evt)
 }
 
 func (cs *claudeSession) handleControlRequest(raw map[string]any) {
@@ -516,11 +523,7 @@ func (cs *claudeSession) handleControlRequest(raw map[string]any) {
 		evt.Questions = parseUserQuestions(input)
 	}
 
-	select {
-	case cs.events <- evt:
-	case <-cs.ctx.Done():
-		return
-	}
+	cs.sendEvent(evt)
 }
 
 // Send writes a user message (with optional images and files) to the Claude process stdin.
@@ -702,6 +705,13 @@ func (cs *claudeSession) Alive() bool {
 	return cs.alive.Load()
 }
 
+func (cs *claudeSession) AttachTerminal() (io.ReadWriteCloser, error) {
+	if cs.tmuxSession == "" {
+		return nil, fmt.Errorf("claudeSession: no tmux sidecar for this session")
+	}
+	return tmux.NewTmuxPipe(cs.tmuxSession)
+}
+
 func (cs *claudeSession) Close() error {
 	// Phase 1: Close stdin to signal EOF. Claude Code exits cleanly on
 	// stdin close, running Stop hooks (e.g. claude-mem session summary).
@@ -717,6 +727,7 @@ func (cs *claudeSession) Close() error {
 	select {
 	case <-cs.done:
 		slog.Info("claudeSession: exited cleanly after stdin close")
+		cs.destroySidecar()
 		return nil
 	case <-time.After(graceful):
 		slog.Warn("claudeSession: graceful stop timed out, sending SIGTERM",
@@ -731,6 +742,7 @@ func (cs *claudeSession) Close() error {
 	select {
 	case <-cs.done:
 		slog.Info("claudeSession: exited after SIGTERM")
+		cs.destroySidecar()
 		return nil
 	case <-time.After(5 * time.Second):
 		slog.Warn("claudeSession: SIGTERM timed out, sending SIGKILL")
@@ -743,7 +755,20 @@ func (cs *claudeSession) Close() error {
 	cs.cancel()
 	_ = forceKillCmd(cs.cmd)
 	<-cs.done
+	cs.destroySidecar()
 	return nil
+}
+
+func (cs *claudeSession) destroySidecar() {
+	if cs.tmuxSession == "" {
+		return
+	}
+	destroySidecarPane(cs.tmuxSession)
+	if cs.paneEvents != nil {
+		close(cs.paneEvents)
+		cs.paneEvents = nil
+	}
+	cs.tmuxSession = ""
 }
 
 // shellJoinArgs joins args into a single string, quoting any arg that

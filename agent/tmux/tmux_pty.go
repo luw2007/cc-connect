@@ -36,3 +36,8 @@ func newTmuxPipe(target string) (io.ReadWriteCloser, error) {
 	}
 	return &tmuxPTY{ptmx: ptmx, cmd: cmd}, nil
 }
+
+// NewTmuxPipe is the exported wrapper around newTmuxPipe.
+func NewTmuxPipe(target string) (io.ReadWriteCloser, error) {
+	return newTmuxPipe(target)
+}
