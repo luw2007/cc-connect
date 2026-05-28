@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -669,6 +670,58 @@ func TestCommandContextWithWorkspace_BoundChannel(t *testing.T) {
 	wantKey := wantWS + ":" + msg.SessionKey
 	if interactiveKey != wantKey {
 		t.Errorf("interactiveKey = %q, want %q", interactiveKey, wantKey)
+	}
+}
+
+// TestExecuteShellCommand_UsesWorkspaceBinding verifies that executeShellCommand
+// resolves the working directory from the channel's workspace binding rather
+// than always falling back to e.agent's work_dir.
+func TestExecuteShellCommand_UsesWorkspaceBinding(t *testing.T) {
+	baseDir := t.TempDir()
+	wsDir := filepath.Join(baseDir, "bound-workspace")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	e := newTestEngineWithMultiWorkspaceAgent(t, baseDir)
+	channelID := "C-exec"
+	channelKey := "test-platform:" + channelID
+	e.workspaceBindings.Bind("project:test", channelKey, "exec-channel", wsDir)
+
+	// Capture the workDir passed to runShellWithProgress by temporarily
+	// running a command that writes $PWD to a file.
+	markerFile := filepath.Join(t.TempDir(), "pwd.txt")
+	cmd := &CustomCommand{
+		Name: "test-exec",
+		Exec: fmt.Sprintf("pwd > %s", markerFile),
+	}
+
+	p := &mockChannelResolver{name: "test-platform", names: map[string]string{}}
+	msg := &Message{
+		Platform:   "test-platform",
+		ChannelKey: channelID,
+		SessionKey: channelKey + ":U-001",
+		ReplyCtx:   "reply-ctx",
+	}
+
+	e.executeShellCommand(p, msg, cmd, nil)
+
+	// Read the marker file to verify pwd matches the bound workspace
+	data, err := os.ReadFile(markerFile)
+	if err != nil {
+		t.Fatalf("failed to read marker file: %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	want := normalizeWorkspacePath(wsDir)
+	// Resolve symlinks for comparison (macOS /tmp → /private/tmp)
+	if resolved, err := filepath.EvalSymlinks(got); err == nil {
+		got = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(want); err == nil {
+		want = resolved
+	}
+	if got != want {
+		t.Errorf("shell command ran in %q, want %q", got, want)
 	}
 }
 

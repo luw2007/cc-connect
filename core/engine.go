@@ -13069,8 +13069,13 @@ func (e *Engine) executeShellCommand(p Platform, msg *Message, cmd *CustomComman
 
 	// Determine working directory
 	workDir := cmd.WorkDir
+	if workDir == "" && e.multiWorkspace {
+		channelKey := effectiveWorkspaceChannelKey(msg)
+		if b, _, usable := e.lookupEffectiveWorkspaceBinding(channelKey); usable {
+			workDir = normalizeWorkspacePath(b.Workspace)
+		}
+	}
 	if workDir == "" {
-		// Default to agent's work_dir if available
 		if e.agent != nil {
 			if agentOpts, ok := e.agent.(interface{ GetWorkDir() string }); ok {
 				workDir = agentOpts.GetWorkDir()
