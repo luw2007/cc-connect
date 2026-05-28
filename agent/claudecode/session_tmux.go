@@ -20,7 +20,7 @@ func createSidecarPane(sessionID string) (string, error) {
 	if len(sessionID) > 12 {
 		name = tmuxSidecarPrefix + sessionID[:12]
 	}
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-x", "200", "-y", "50", "cat")
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-x", "200", "-y", "50", "tail", "-f", "/dev/null")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("tmux new-session: %w: %s", err, strings.TrimSpace(string(out)))
 	}
