@@ -43,3 +43,15 @@ func captureSidecarPane(name string) (string, error) {
 	}
 	return string(out), nil
 }
+
+func reapStaleSidecars() {
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, tmuxSidecarPrefix) {
+			_ = exec.Command("tmux", "kill-session", "-t", line).Run()
+		}
+	}
+}

@@ -178,6 +178,9 @@ func New(opts map[string]any) (core.Agent, error) {
 	if terminalBackend == "" {
 		terminalBackend = "auto"
 	}
+	if terminalBackend != "never" {
+		reapStaleSidecars()
+	}
 
 	// run_as_user: optional OS-user isolation. Injected into opts from
 	// the project-level config field by cmd/cc-connect/main.go.

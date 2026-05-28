@@ -318,10 +318,11 @@ func (cs *claudeSession) handleReadLoopScanErr(err error, waitDone <-chan struct
 }
 
 func (cs *claudeSession) sendEvent(evt core.Event) bool {
-	if cs.paneEvents != nil {
+	if ch := cs.paneEvents; ch != nil {
 		select {
-		case cs.paneEvents <- evt:
+		case ch <- evt:
 		default:
+		case <-cs.ctx.Done():
 		}
 	}
 	select {
@@ -710,6 +711,13 @@ func (cs *claudeSession) AttachTerminal() (io.ReadWriteCloser, error) {
 		return nil, fmt.Errorf("claudeSession: no tmux sidecar for this session")
 	}
 	return tmux.NewTmuxPipe(cs.tmuxSession)
+}
+
+func (cs *claudeSession) CaptureBuffer() (string, error) {
+	if cs.tmuxSession == "" {
+		return "", fmt.Errorf("claudeSession: no tmux sidecar for this session")
+	}
+	return captureSidecarPane(cs.tmuxSession)
 }
 
 func (cs *claudeSession) Close() error {
