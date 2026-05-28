@@ -15,3 +15,5 @@ func createSidecarPane(_ string) (string, error) { return "", errTmuxNotSupporte
 func destroySidecarPane(_ string) error { return errTmuxNotSupported }
 
 func captureSidecarPane(_ string) (string, error) { return "", errTmuxNotSupported }
+
+func reapStaleSidecars() {}
