@@ -3,6 +3,8 @@
 package claudecode
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -16,10 +18,16 @@ func tmuxAvailable() bool {
 }
 
 func createSidecarPane(sessionID string) (string, error) {
-	name := tmuxSidecarPrefix + sessionID
-	if len(sessionID) > 12 {
-		name = tmuxSidecarPrefix + sessionID[:12]
+	suffix := sessionID
+	if len(suffix) > 12 {
+		suffix = suffix[:12]
 	}
+	if suffix == "" || suffix == "__continue__" {
+		b := make([]byte, 6)
+		rand.Read(b)
+		suffix = hex.EncodeToString(b)
+	}
+	name := tmuxSidecarPrefix + suffix
 	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-x", "200", "-y", "50", "tail", "-f", "/dev/null")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("tmux new-session: %w: %s", err, strings.TrimSpace(string(out)))
@@ -37,7 +45,7 @@ func destroySidecarPane(name string) error {
 }
 
 func captureSidecarPane(name string) (string, error) {
-	out, err := exec.Command("tmux", "capture-pane", "-t", name, "-p", "-e").Output()
+	out, err := exec.Command("tmux", "capture-pane", "-t", name, "-p", "-e", "-S", "-").Output()
 	if err != nil {
 		return "", fmt.Errorf("tmux capture-pane: %w", err)
 	}

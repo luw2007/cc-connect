@@ -52,8 +52,9 @@ type claudeSession struct {
 	gracefulStopTimeout time.Duration
 
 	// tmux sidecar fields — populated by wiring layer when terminal_backend = "tmux"
-	tmuxSession string         // tmux session target (e.g. "cc-abc123")
-	paneEvents  chan core.Event // mirror of events, written by sidecar forwarder
+	tmuxSession  string         // tmux session target (e.g. "cc-connect-abc123")
+	paneEvents   chan core.Event // mirror of events, written by sidecar forwarder
+	sidecarOnce  sync.Once      // ensures destroySidecar runs exactly once
 }
 
 func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs []string, cliArgsFlag string, model, effort, sessionID, mode, systemPrompt string, allowedTools, disallowedTools []string, extraEnv []string, platformPrompt string, disableVerbose bool, spawnOpts core.SpawnOptions, maxContextTokens int, terminalBackend string) (*claudeSession, error) {
@@ -768,15 +769,15 @@ func (cs *claudeSession) Close() error {
 }
 
 func (cs *claudeSession) destroySidecar() {
-	if cs.tmuxSession == "" {
-		return
-	}
-	destroySidecarPane(cs.tmuxSession)
-	if cs.paneEvents != nil {
+	cs.sidecarOnce.Do(func() {
+		if cs.tmuxSession == "" {
+			return
+		}
+		destroySidecarPane(cs.tmuxSession)
 		close(cs.paneEvents)
 		cs.paneEvents = nil
-	}
-	cs.tmuxSession = ""
+		cs.tmuxSession = ""
+	})
 }
 
 // shellJoinArgs joins args into a single string, quoting any arg that
