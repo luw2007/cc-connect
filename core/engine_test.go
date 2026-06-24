@@ -1212,7 +1212,7 @@ func TestProcessInteractiveEvents_NonTerminalResultContinuesTurn(t *testing.T) {
 		Done:    true,
 	}
 
-	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m1", time.Now(), nil, nil, nil)
+	e.processInteractiveEvents(context.Background(), state, session, e.sessions, sessionKey, "m1", time.Now(), nil, nil, nil)
 
 	// noteUserTurnCompleted must have been called exactly once on the
 	// terminal result, advancing the watermark to the in-flight message time.
@@ -9086,7 +9086,7 @@ func TestProcessInteractiveEvents_DrainsQueuedMessagesFIFOWithCreateTimes(t *tes
 
 	done := make(chan struct{})
 	go func() {
-		e.processInteractiveEvents(state, session, e.sessions, key, "msg0", time.Now(), nil, sendDone, "ctx-turn1")
+		e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "msg0", time.Now(), nil, sendDone, "ctx-turn1")
 		close(done)
 	}()
 
@@ -9794,7 +9794,7 @@ func TestProcessInteractiveMessageWith_NilAgentSession_NoPanic(t *testing.T) {
 			}
 			close(done)
 		}()
-		e.processInteractiveMessageWith(p, &Message{
+		e.processInteractiveMessageWith(context.Background(), p, &Message{
 			SessionKey: sessionKey,
 			UserID:     "user-nil",
 			Content:    "trigger nil guard",

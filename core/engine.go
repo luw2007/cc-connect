@@ -1919,7 +1919,7 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 		if workspaceDir != "" {
 			iKey = workspaceDir + ":" + iKey
 		}
-		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
+		e.processInteractiveMessageWith(e.ctx, effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
 		e.cleanupInteractiveState(iKey)
 		return nil
 	}
@@ -1933,7 +1933,7 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 	if workspaceDir != "" {
 		iKey = workspaceDir + ":" + sessionKey
 	}
-	e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
+	e.processInteractiveMessageWith(e.ctx, effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
 	return nil
 }
 
@@ -7358,7 +7358,7 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 	// original conversation; wiping it makes /history return empty after a
 	// /switch round-trip. When SwitchToAgentSession creates a fresh Session
 	// (no prior match), History is already nil, so preserving is a no-op.
-	_ = sessions.SwitchToAgentSession(msg.SessionKey, matched.ID, agent.Name(), matched.Summary)
+	session := sessions.SwitchToAgentSession(msg.SessionKey, matched.ID, agent.Name(), matched.Summary)
 
 	shortID := matched.ID
 	if len(shortID) > 12 {
