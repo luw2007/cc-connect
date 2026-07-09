@@ -1866,6 +1866,39 @@ app_secret = "your-feishu-app-secret"
 # token = "your-telegram-bot-token"
 
 # =============================================================================
+# Project: Using herdr / 使用 herdr (uncomment to enable / 取消注释以启用)
+# =============================================================================
+# Requires: herdr running locally — https://github.com/ogulcancelik/herdr
+# 需要本机已启动 herdr（`herdr` 命令，socket 默认在 ~/.config/herdr/herdr.sock）
+# Drives a CLI process hosted in a herdr-managed pane. Unlike tmux (which
+# shares one long-lived session by default), this always creates a fresh
+# herdr pane per cc-connect session — herdr panes are cheap to create via
+# its socket API, so there's no "attach to my existing session" use case to
+# preserve. Turn completion uses herdr's own agent_status detection when the
+# wrapped CLI is one herdr recognizes (claude, codex, ...), falling back to
+# screen-stability polling otherwise (same heuristic as the tmux backend).
+#
+# [[projects]]
+# name = "my-herdr-project"
+#
+# [projects.agent]
+# type = "herdr"
+#
+# [projects.agent.options]
+# init_command = "claude --dangerously-skip-permissions"  # required: command run in the new pane
+# work_dir = "/path/to/project"    # working directory for the pane (default: ".")
+# socket_path = ""                 # override herdr socket path (default: ~/.config/herdr/herdr.sock)
+# name_prefix = "cc-"              # prefix for auto-generated pane names (default: "cc-")
+# startup_wait_ms = 2000           # milliseconds to wait after init_command before accepting messages (default: 2000)
+# poll_interval_ms = 200           # output poll interval in milliseconds (default: 200)
+#
+# [[projects.platforms]]
+# type = "telegram"
+#
+# [projects.platforms.options]
+# token = "your-telegram-bot-token"
+
+# =============================================================================
 # Project 6: Using OpenCode / 项目 6：使用 OpenCode (uncomment to enable / 取消注释以启用)
 # =============================================================================
 # Requires: OpenCode CLI — https://github.com/opencode-ai/opencode
