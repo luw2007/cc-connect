@@ -1113,7 +1113,7 @@ func TestProcessInteractiveEvents_StripsAgentFooterWhenEnabled(t *testing.T) {
 
 	agentSession.events <- Event{Type: EventText, Content: "answer\n\n*claude-opus-4-8[1m] · out 788 · in 442 cw 0 cr 395.1k · ctx 40%*"}
 	agentSession.events <- Event{Type: EventResult, Done: true}
-	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-agent-footer", time.Now(), nil, nil, state.replyCtx)
+	e.processInteractiveEvents(context.Background(), state, session, e.sessions, sessionKey, "m-agent-footer", time.Now(), nil, nil, state.replyCtx)
 
 	sent := p.getSent()
 	if len(sent) != 1 {
@@ -1144,7 +1144,7 @@ func TestProcessInteractiveEvents_KeepsAgentFooterByDefault(t *testing.T) {
 	body := "answer\n\n*claude-opus-4-8[1m] · out 788 · in 442 cw 0 cr 395.1k · ctx 40%*"
 	agentSession.events <- Event{Type: EventText, Content: body}
 	agentSession.events <- Event{Type: EventResult, Done: true}
-	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-agent-footer-default", time.Now(), nil, nil, state.replyCtx)
+	e.processInteractiveEvents(context.Background(), state, session, e.sessions, sessionKey, "m-agent-footer-default", time.Now(), nil, nil, state.replyCtx)
 
 	sent := p.getSent()
 	if len(sent) != 1 {
@@ -7527,7 +7527,7 @@ func TestProcessInteractiveMessage_SchedulesAgentSessionIdleCloseAfterCleanTurn(
 	e.SetAgentSessionIdleTimeout(20 * time.Millisecond)
 	session := e.sessions.GetOrCreateActive("test:chat:user1")
 
-	go e.processInteractiveMessageWith(p, &Message{
+	go e.processInteractiveMessageWith(context.Background(), p, &Message{
 		Platform:   "test",
 		SessionKey: "test:chat:user1",
 		UserID:     "user1",
@@ -16073,7 +16073,7 @@ func TestProcessInteractiveEvents_StreamingCard_BareNoReply_Suppressed(t *testin
 	agentSession.events <- Event{Type: EventText, Content: "NO_REPLY"}
 	agentSession.events <- Event{Type: EventResult, Content: "NO_REPLY", Done: true}
 
-	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-streamcard-bare-noreply", time.Now(), nil, nil, state.replyCtx)
+	e.processInteractiveEvents(context.Background(), state, session, e.sessions, sessionKey, "m-streamcard-bare-noreply", time.Now(), nil, nil, state.replyCtx)
 
 	if !card.finalized() {
 		t.Fatalf("expected streaming card to be finalized on a silent turn")
