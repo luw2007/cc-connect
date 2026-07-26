@@ -4930,8 +4930,8 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 	waitStart := time.Now()
 	firstEventLogged := false
 	var toolSteps []ToolStep
-	var lastRichCardUpdate time.Time
 	var lastRichCardLen int
+	var richFlusher *FlushController
 	var cardMessageID any
 	var partialText string
 	triggerAutoCompress := false
@@ -5171,6 +5171,61 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 		buildResolvedRichCard := func(status CardStatus, title string, steps []ToolStep, markdown string, streaming bool, statusFooter string) string {
 			return richCardSupporter.BuildRichCard(status, title, steps, resolveRichCardMarkdown(markdown, !streaming), streaming, statusFooter)
 		}
+		ensureRichFlusher := func() *FlushController {
+			if richFlusher == nil {
+				richFlusher = NewFlushController(e.streamPreview.RichInterval())
+			}
+			return richFlusher
+		}
+		scheduleRichFrame := func(handle any, body string, steps []ToolStep, footer string, preferStreamText bool) {
+			stepsCopy := append([]ToolStep(nil), steps...)
+			streamer, hasStreamer := p.(RichCardTextStreamer)
+			updater, hasUpdater := p.(MessageUpdater)
+			platformName := p.Name()
+			ensureRichFlusher().Schedule(e.ctx, func(ctx context.Context) error {
+				if preferStreamText && hasStreamer {
+					if err := streamer.StreamRichCardText(ctx, handle, resolveRichCardMarkdown(body, false)); err == nil {
+						return nil
+					} else if !errors.Is(err, ErrNotSupported) {
+						slog.Debug("rich card: streaming text update failed, falling back to full patch", "platform", platformName, "error", err)
+					}
+				}
+				if !hasUpdater {
+					return ErrNotSupported
+				}
+				card := buildResolvedRichCard(CardStatusWorking, "", stepsCopy, body, true, footer)
+				return updater.UpdateMessage(ctx, handle, card)
+			}, false)
+		}
+		finalizeRichCard := func(platform Platform, handle any, finalBody, finalCard string) bool {
+			fc := ensureRichFlusher()
+			fc.Drain(e.ctx, e.streamPreview.RichFinalDrain())
+			streamer, hasStreamer := platform.(RichCardTextStreamer)
+			updater, hasUpdater := platform.(MessageUpdater)
+			platformName := platform.Name()
+			task := fc.Schedule(e.ctx, func(ctx context.Context) error {
+				if hasStreamer && finalBody != "" {
+					// Unconditional best-effort catch-up: sequence monotonicity makes a redundant PUT harmless.
+					if err := streamer.StreamRichCardText(ctx, handle, finalBody); err != nil && !errors.Is(err, ErrNotSupported) {
+						slog.Debug("rich card: final streaming flush failed", "platform", platformName, "error", err)
+					}
+				}
+				if !hasUpdater {
+					return ErrNotSupported
+				}
+				return updater.UpdateMessage(ctx, handle, finalCard)
+			}, true)
+			fc.Close()
+			if !task.Wait(e.ctx, e.streamPreview.RichTerminalBudget()) {
+				slog.Warn("rich card: terminal frame timed out", "platform", platformName)
+				return false
+			}
+			if err := task.Err(); err != nil {
+				slog.Debug("rich card: terminal frame failed", "platform", platformName, "error", err)
+				return false
+			}
+			return true
+		}
 
 		switch event.Type {
 		case EventThinking:
@@ -5200,11 +5255,8 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 							cardMessageID = handle
 						}
 					}
-				} else if updater, ok := p.(MessageUpdater); ok {
-					card := buildResolvedRichCard(CardStatusThinking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
-					if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err != nil {
-						slog.Debug("rich card: failed to update thinking card", "platform", p.Name(), "error", err)
-					}
+				} else {
+					scheduleRichFrame(cardMessageID, partialText, toolSteps, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir), false)
 				}
 				break
 			}
@@ -5287,11 +5339,8 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 							cardMessageID = handle
 						}
 					}
-				} else if updater, ok := p.(MessageUpdater); ok {
-					card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
-					if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err != nil {
-						slog.Debug("rich card: failed to update tool card", "platform", p.Name(), "error", err)
-					}
+				} else {
+					scheduleRichFrame(cardMessageID, partialText, toolSteps, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir), false)
 				}
 				break
 			}
@@ -5402,11 +5451,8 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 									cardMessageID = handle
 								}
 							}
-						} else if updater, ok := p.(MessageUpdater); ok {
-							card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
-							if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err != nil {
-								slog.Debug("rich card: failed to update tool-result card", "platform", p.Name(), "error", err)
-							}
+						} else {
+							scheduleRichFrame(cardMessageID, partialText, toolSteps, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir), false)
 						}
 						break
 					}
@@ -5496,41 +5542,11 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 									}
 								}
 							}
-							// Throttle: cardkit-v1 streaming text path uses tighter limits (200ms / 20 chars)
-							// for smoother typewriter UX; full-card Patch fallback keeps the original 1500ms / 30 chars.
-							streamer, hasStreamer := p.(RichCardTextStreamer)
-							throttleDur := 1500 * time.Millisecond
-							throttleChars := 30
-							if hasStreamer && cardMessageID != nil {
-								throttleDur = 200 * time.Millisecond
-								throttleChars = 20
-							}
-							if cardMessageID != nil && (time.Since(lastRichCardUpdate) > throttleDur || len(partialText)-lastRichCardLen > throttleChars) {
-								// Prefer per-element streaming text update (cardkit-v1) when available;
-								// it engages Lark's native typewriter rendering. Falls back to
-								// full-card Patch on ErrNotSupported (handle without cardID) or any error.
-								streamed := false
-								if hasStreamer {
-									streamBody := resolveRichCardMarkdown(partialText, false)
-									if err := streamer.StreamRichCardText(e.ctx, cardMessageID, streamBody); err == nil {
-										lastRichCardUpdate = time.Now()
-										lastRichCardLen = len(partialText)
-										streamed = true
-									} else if !errors.Is(err, ErrNotSupported) {
-										slog.Debug("rich card: streaming text update failed, falling back to full Patch", "platform", p.Name(), "error", err)
-									}
-								}
-								if !streamed {
-									card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
-									if updater, ok := p.(MessageUpdater); ok {
-										if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err == nil {
-											lastRichCardUpdate = time.Now()
-											lastRichCardLen = len(partialText)
-										} else {
-											slog.Debug("rich card: failed to update text card", "platform", p.Name(), "error", err)
-										}
-									}
-								}
+							// Every new frame schedules; latest-wins coalescing is the only throttle.
+							// RichMinDelta is advisory and same-content frames are the only suppression.
+							if cardMessageID != nil && len(partialText) > lastRichCardLen {
+								lastRichCardLen = len(partialText)
+								scheduleRichFrame(cardMessageID, partialText, toolSteps, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir), true)
 							}
 						}
 					} else {
@@ -5904,10 +5920,8 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 					}
 					if silentBody != "" || len(toolSteps) > 0 {
 						card := buildResolvedRichCard(CardStatusDone, "", toolSteps, silentBody, false, e.composeRichStatusFooter(false, turnStart, e.agent, state.agentSession, state.workspaceDir))
-						if updater, ok := p.(MessageUpdater); ok {
-							if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err != nil {
-								slog.Debug("rich card: failed to finalize card on silent reply", "platform", p.Name(), "error", err)
-							}
+						if !finalizeRichCard(p, cardMessageID, "", card) {
+							slog.Debug("rich card: failed to finalize card on silent reply", "platform", p.Name())
 						}
 					} else {
 						if cleaner, ok := p.(PreviewCleaner); ok {
@@ -5937,18 +5951,10 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 					// catch-up keeps the typewriter rendering smooth all the way to the
 					// end. ErrNotSupported (no cardID) and any error are silent — the
 					// subsequent UpdateMessage will rewrite the body anyway.
-					if streamer, ok := p.(RichCardTextStreamer); ok {
-						if err := streamer.StreamRichCardText(e.ctx, cardMessageID, finalBody); err != nil && !errors.Is(err, ErrNotSupported) {
-							slog.Debug("rich card: final streaming flush failed (proceeding to full Patch)", "platform", p.Name(), "error", err)
-						}
-					}
-					if updater, ok := p.(MessageUpdater); ok {
-						if err := updater.UpdateMessage(e.ctx, cardMessageID, finalCard); err != nil {
-							slog.Debug("rich card: final update failed, falling back to send", "platform", p.Name(), "error", err)
-							if err := p.Send(e.ctx, replyCtx, finalCard); err != nil {
-								slog.Error("failed to send rich card reply", "error", err)
-								return
-							}
+					if !finalizeRichCard(p, cardMessageID, finalBody, finalCard) {
+						if err := p.Send(e.ctx, replyCtx, finalCard); err != nil {
+							slog.Error("failed to send rich card reply", "error", err)
+							return
 						}
 					}
 				} else {
@@ -6133,6 +6139,18 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 				queued := state.pendingMessages[0]
 				state.pendingMessages = state.pendingMessages[1:]
 				remainingQueue := len(state.pendingMessages)
+				prevPlatform := p
+				state.mu.Unlock()
+
+				// Must execute before state.platform is reassigned to the queued platform.
+				if _, prevHasRichCard := prevPlatform.(RichCardSupporter); cardMessageID != nil && prevHasRichCard && e.display.CardMode == "rich" {
+					abandonCard := buildResolvedRichCard(CardStatusDone, "", toolSteps, partialText, false, e.composeRichStatusFooter(false, turnStart, e.agent, state.agentSession, state.workspaceDir))
+					if !finalizeRichCard(prevPlatform, cardMessageID, "", abandonCard) {
+						slog.Debug("rich card: failed to finalize abandoned card", "platform", prevPlatform.Name())
+					}
+				}
+
+				state.mu.Lock()
 				state.platform = queued.platform
 				state.replyCtx = queued.replyCtx
 				state.currentMessageID = queued.messageID
@@ -6205,7 +6223,10 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 				cardMessageID = nil
 				toolSteps = nil
 				partialText = ""
-				lastRichCardUpdate = time.Time{}
+				if richFlusher != nil {
+					richFlusher.Close()
+					richFlusher = nil
+				}
 				lastRichCardLen = 0
 				queuedRenderer := func(content string) string {
 					return e.renderOutgoingContentForWorkspace(queued.platform, content, workspaceDir)
@@ -6284,10 +6305,8 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 			state.mu.Unlock()
 			if hasRichCard && cardMessageID != nil {
 				errCard := buildResolvedRichCard(CardStatusError, "", toolSteps, partialText, false, e.composeRichStatusFooter(false, turnStart, e.agent, state.agentSession, state.workspaceDir))
-				if updater, ok := p.(MessageUpdater); ok {
-					if err := updater.UpdateMessage(e.ctx, cardMessageID, errCard); err != nil {
-						slog.Debug("rich card: failed to update error card", "platform", p.Name(), "error", err)
-					}
+				if !finalizeRichCard(p, cardMessageID, "", errCard) {
+					slog.Debug("rich card: failed to update error card", "platform", p.Name())
 				}
 			}
 			if event.Error != nil {

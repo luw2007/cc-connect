@@ -1935,6 +1935,116 @@ func TestCUJ_I1_RichCardLinkedToPlatformAndIntegration(t *testing.T) {
 	t.Log("CUJ-I1: covered by platform/feishu/card_test.go + release-gate TestCC_CARD_01_rich")
 }
 
+type cujRichCardPlatform struct {
+	stubPlatformEngine
+	cardMu       sync.Mutex
+	handleIndex  map[string]int
+	streamBodies map[string][]string
+	next         int
+}
+
+func (p *cujRichCardPlatform) BuildRichCard(status CardStatus, _ string, _ []ToolStep, markdown string, streaming bool, _ string) string {
+	return fmt.Sprintf(`{"status":%q,"body":%q,"streaming_mode":%t}`, status, markdown, streaming)
+}
+func (p *cujRichCardPlatform) SendPreviewStart(_ context.Context, _ any, content string) (any, error) {
+	p.cardMu.Lock()
+	defer p.cardMu.Unlock()
+	p.next++
+	h := fmt.Sprintf("card-%d", p.next)
+	p.mu.Lock()
+	p.sent = append(p.sent, content)
+	idx := len(p.sent) - 1
+	p.mu.Unlock()
+	if p.handleIndex == nil {
+		p.handleIndex = map[string]int{}
+	}
+	p.handleIndex[h] = idx
+	return h, nil
+}
+func (p *cujRichCardPlatform) UpdateMessage(_ context.Context, handle any, content string) error {
+	p.cardMu.Lock()
+	defer p.cardMu.Unlock()
+	idx := p.handleIndex[fmt.Sprint(handle)]
+	p.mu.Lock()
+	p.sent[idx] = content
+	p.mu.Unlock()
+	return nil
+}
+func (p *cujRichCardPlatform) StreamRichCardText(_ context.Context, handle any, body string) error {
+	p.cardMu.Lock()
+	defer p.cardMu.Unlock()
+	if p.streamBodies == nil {
+		p.streamBodies = map[string][]string{}
+	}
+	h := fmt.Sprint(handle)
+	p.streamBodies[h] = append(p.streamBodies[h], body)
+	return nil
+}
+func (p *cujRichCardPlatform) streams(handle string) []string {
+	p.cardMu.Lock()
+	defer p.cardMu.Unlock()
+	return append([]string(nil), p.streamBodies[handle]...)
+}
+
+func TestCUJ_I5_RichCardStreamingLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	p := &cujRichCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "rich"}}
+	agent := &cujAgent{}
+	agent.setNextSessionEvents([]Event{{Type: EventText, Content: "alpha"}, {Type: EventToolUse, ToolName: "Read", ToolInput: "a"}, {Type: EventToolUse, ToolName: "Bash", ToolInput: "echo b"}, {Type: EventText, Content: " omega"}, {Type: EventResult, Content: "alpha omega", Done: true}}, 15)
+	e := NewEngine("test", agent, []Platform{p}, dir+"/sessions.json", LangEnglish)
+	e.SetDisplayConfig(DisplayCfg{Mode: "full", CardMode: "rich", ThinkingMessages: true, ToolMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500})
+	cfg := DefaultStreamPreviewCfg()
+	cfg.RichIntervalMs = 5
+	e.SetStreamPreviewCfg(cfg)
+	send := func(id, content string) {
+		e.ReceiveMessage(p, &Message{SessionKey: "rich:user", Platform: "rich", MessageID: id, UserID: "user", UserName: "user", Content: content, ReplyCtx: "ctx-" + id})
+	}
+	// Action 1: initial user message. Action 2 is the observable agent stream + two tools.
+	send("m1", "first")
+	deadline := time.Now().Add(2 * time.Second)
+	for len(p.streams("card-1")) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Action 3: another user message while turn one is active, exercising queue rollover.
+	agent.mu.Lock()
+	if len(agent.sessions) > 0 {
+		agent.sessions[0].reply = "second answer"
+	}
+	agent.mu.Unlock()
+	send("m2", "second")
+	// Race-enabled full-package runs can be heavily contended; wait for the
+	// queued turn's second card with the same generous budget used by other CUJs.
+	deadline = time.Now().Add(30 * time.Second)
+	for len(p.getSent()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	allSent := p.getSent()
+	var sent []string
+	for _, item := range allSent {
+		if strings.HasPrefix(item, `{"status":`) {
+			sent = append(sent, item)
+		}
+	}
+	if len(sent) != 2 {
+		t.Fatalf("user sees %d cards, want 2 (all sends=%v)", len(sent), allSent)
+	}
+	if !strings.Contains(sent[0], `"status":"done"`) || strings.Contains(sent[0], `"streaming_mode":true`) {
+		t.Fatalf("first terminal card invalid: %s", sent[0])
+	}
+	frames := p.streams("card-1")
+	prev := 0
+	for _, frame := range frames {
+		if len(frame) < prev {
+			t.Fatalf("frame sequence regressed: %v", frames)
+		}
+		prev = len(frame)
+	}
+	if len(frames) == 0 || frames[len(frames)-1] != "alpha omega" {
+		t.Fatalf("final stream body incomplete: %v", frames)
+	}
+}
+
 // CUJ-I2 · Legacy card mode for backwards-compatibility.
 func TestCUJ_I2_LegacyCardLinkedToIntegration(t *testing.T) {
 	t.Log("CUJ-I2: covered by release-gate TestCC_CARD_02_legacy")

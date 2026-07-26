@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 
 	"github.com/chenhg5/cc-connect/core"
 	callback "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
@@ -2308,6 +2310,120 @@ func TestCmdAction_WithAfterClick_DispatchesAndReturnsCard(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected command to be dispatched")
+	}
+}
+
+func TestRichCardStreamingConfigAndFinalOmission(t *testing.T) {
+	b, err := buildRichCardJSONBytes(core.CardStatusWorking, nil, "x", true, "", streamingCardConfig{77, 3, "delay"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card map[string]any
+	if err := json.Unmarshal(b, &card); err != nil {
+		t.Fatal(err)
+	}
+	cfg := card["config"].(map[string]any)
+	sc := cfg["streaming_config"].(map[string]any)
+	if sc["print_strategy"] != "delay" || sc["print_frequency_ms"].(map[string]any)["default"] != float64(77) || sc["print_step"].(map[string]any)["default"] != float64(3) {
+		t.Fatalf("config=%v", sc)
+	}
+	b, _ = buildRichCardJSONBytes(core.CardStatusDone, nil, "x", false, "")
+	json.Unmarshal(b, &card)
+	cfg = card["config"].(map[string]any)
+	if _, ok := cfg["streaming_mode"]; ok {
+		t.Fatal("terminal streaming_mode present")
+	}
+	if _, ok := cfg["streaming_config"]; ok {
+		t.Fatal("terminal streaming_config present")
+	}
+}
+func TestBuildDeliveryUUID_StableBoundedAndRouteIsolated(t *testing.T) {
+	a := buildDeliveryUUID("p", "c", "m")
+	if a != buildDeliveryUUID("p", "c", "m") || len(a) > 50 {
+		t.Fatal(a)
+	}
+	if a == buildDeliveryUUID("p", "c2", "m") || a == buildDeliveryUUID("p", "c", "m2") {
+		t.Fatal("not isolated")
+	}
+}
+func TestCardRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+		ok   bool
+	}{{"1.5", 1500 * time.Millisecond, true}, {"9", 2 * time.Second, true}, {"bad", 0, false}, {"-1", 0, false}} {
+		r := &larkcore.ApiResp{Header: http.Header{"Retry-After": []string{tc.raw}}}
+		got, ok := cardRetryAfter(r)
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("%q got %v,%v", tc.raw, got, ok)
+		}
+	}
+}
+func TestWithCardAPIRetry_Retries429ThenSucceedsAndHonorsBackoff(t *testing.T) {
+	p := &Platform{platformName: "test"}
+	var calls int
+	var callTimes []time.Time
+	resp, err := p.withCardAPIRetry(context.Background(), "test", func() (*larkcore.ApiResp, error) {
+		calls++
+		callTimes = append(callTimes, time.Now())
+		status := http.StatusTooManyRequests
+		if calls == 3 {
+			status = http.StatusOK
+		}
+		return &larkcore.ApiResp{StatusCode: status}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || resp == nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("calls=%d resp=%v", calls, resp)
+	}
+	if first, second := callTimes[1].Sub(callTimes[0]), callTimes[2].Sub(callTimes[1]); first < 350*time.Millisecond || second < 750*time.Millisecond || second <= first {
+		t.Fatalf("backoff order first=%v second=%v", first, second)
+	}
+}
+
+func TestWithCardAPIRetry_ContextCancelReturnsEarly(t *testing.T) {
+	p := &Platform{platformName: "test"}
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	started := time.Now()
+	_, err := p.withCardAPIRetry(ctx, "test", func() (*larkcore.ApiResp, error) {
+		calls++
+		cancel()
+		return &larkcore.ApiResp{StatusCode: http.StatusTooManyRequests}, nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+	if calls != 1 || time.Since(started) >= 200*time.Millisecond {
+		t.Fatalf("calls=%d elapsed=%v", calls, time.Since(started))
+	}
+}
+
+func TestFeishuCardError_11310_IsNotRetryable(t *testing.T) {
+	err := classifyFeishuCardAPIError("x", 230099, "table number over limit ErrCode: 11310")
+	if !errors.Is(err, core.ErrNotRetryable) {
+		t.Fatal(err)
+	}
+}
+func TestFeishuCardError_RateLimited_IsRetryable(t *testing.T) {
+	err := classifyFeishuCardAPIError("x", 230020, "rate limited")
+	if errors.Is(err, core.ErrNotRetryable) {
+		t.Fatal(err)
+	}
+}
+func TestStreamingCardOptionsBounds(t *testing.T) {
+	base := map[string]any{"app_id": "x", "app_secret": "y"}
+	for key, value := range map[string]any{"card_print_frequency_ms": 9, "card_print_step": 21, "card_print_strategy": "slow"} {
+		opts := map[string]any{}
+		for k, v := range base {
+			opts[k] = v
+		}
+		opts[key] = value
+		if _, err := New(opts); err == nil {
+			t.Fatalf("%s accepted", key)
+		}
 	}
 }
 
