@@ -128,17 +128,20 @@ func (*launchdManager) Stop() error {
 }
 
 func (*launchdManager) Restart() error {
-	domain := preferredLaunchdDomain()
-	if loadedDomain, _, _, ok := loadedLaunchdTarget(); ok && domain != launchdGUIDomain() {
-		domain = loadedDomain
+	if _, target, _, ok := loadedLaunchdTarget(); ok {
+		out, err := runLaunchctl("kickstart", "-kp", target)
+		if err != nil {
+			return fmt.Errorf("restart kickstart: %s (%w)", out, err)
+		}
+		return nil
 	}
-	target := launchdTarget(domain)
-	bootoutLaunchdTargets()
 
+	domain := preferredLaunchdDomain()
+	target := launchdTarget(domain)
 	plistPath := launchdPlistPath()
 
-	// launchd bootout is asynchronous; retry bootstrap with backoff
-	// to avoid "Bootstrap failed: 5" race condition.
+	// Retry bootstrap with the existing backoff to tolerate transient launchd
+	// failures before kickstarting a service that was not already loaded.
 	var out string
 	var err error
 	for i := 0; i < 3; i++ {
@@ -151,10 +154,11 @@ func (*launchdManager) Restart() error {
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("restart: %s (%w)", out, err)
+		return fmt.Errorf("restart bootstrap: %s (%w)", out, err)
 	}
-	if _, err := runLaunchctl("kickstart", "-kp", target); err != nil {
-		return fmt.Errorf("restart kickstart: %w", err)
+	out, err = runLaunchctl("kickstart", "-kp", target)
+	if err != nil {
+		return fmt.Errorf("restart kickstart: %s (%w)", out, err)
 	}
 	return nil
 }
@@ -350,4 +354,3 @@ func buildPlist(cfg Config) string {
 </plist>
 `, launchdLabel, xmlEscape(cfg.BinaryPath), xmlEscape(cfg.WorkDir), xmlEscape(cfg.LogFile), cfg.LogMaxSize, cfg.LogMaxBackups, xmlEscape(envPATH), envExtra)
 }
-
