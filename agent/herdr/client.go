@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
+	"time"
 )
 
 // Wire protocol confirmed against a live herdr socket (v0.36+/0.7+): one JSON
@@ -34,7 +36,12 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-func (e *rpcError) Error() string { return e.Message }
+func (e *rpcError) Error() string {
+	if e.Code == "" {
+		return e.Message
+	}
+	return e.Code + ": " + e.Message
+}
 
 var requestCounter atomic.Int64
 
@@ -42,23 +49,45 @@ var requestCounter atomic.Int64
 // own connection (see wire protocol notes above).
 type client struct {
 	socketPath string
+	dial       func(context.Context) (net.Conn, error)
+	rpcTimeout time.Duration
 }
 
+const defaultRPCTimeout = 10 * time.Second
+
 func newClient(socketPath string) *client {
-	return &client{socketPath: socketPath}
+	c := &client{socketPath: socketPath, rpcTimeout: defaultRPCTimeout}
+	c.dial = func(ctx context.Context) (net.Conn, error) {
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, "unix", socketPath)
+	}
+	return c
 }
 
 func (c *client) call(ctx context.Context, method string, params any, out any) error {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", c.socketPath)
+	dialCtx, dialCancel := context.WithTimeout(ctx, c.rpcTimeout)
+	conn, err := c.dial(dialCtx)
+	dialCancel()
 	if err != nil {
 		return fmt.Errorf("herdr: connect %s: %w", c.socketPath, err)
 	}
 	defer conn.Close()
 
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline)
+	deadline := time.Now().Add(c.rpcTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
 	}
+	_ = conn.SetDeadline(deadline)
+
+	readDone := make(chan struct{})
+	defer close(readDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-readDone:
+		}
+	}()
 
 	id := fmt.Sprintf("%d", requestCounter.Add(1))
 	line, err := json.Marshal(rpcRequest{ID: id, Method: method, Params: params})
@@ -67,11 +96,17 @@ func (c *client) call(ctx context.Context, method string, params any, out any) e
 	}
 	line = append(line, '\n')
 	if _, err := conn.Write(line); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("herdr: write %s request: %w", method, err)
 	}
 
 	respLine, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil && respLine == "" {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("herdr: read %s response: %w", method, err)
 	}
 
@@ -80,7 +115,7 @@ func (c *client) call(ctx context.Context, method string, params any, out any) e
 		return fmt.Errorf("herdr: malformed %s response: %w", method, err)
 	}
 	if resp.Error != nil {
-		return fmt.Errorf("herdr: %s: %s", method, resp.Error.Message)
+		return fmt.Errorf("herdr: %s: %w", method, resp.Error)
 	}
 	if out == nil || len(resp.Result) == 0 {
 		return nil
@@ -94,14 +129,15 @@ func (c *client) call(ctx context.Context, method string, params any, out any) e
 // agentInfo mirrors herdr's AgentInfo (src/api/schema/agents.rs); only the
 // fields this package actually reads are declared.
 type agentInfo struct {
-	TerminalID  string `json:"terminal_id"`
-	Name        string `json:"name,omitempty"`
-	Agent       string `json:"agent,omitempty"`
-	AgentStatus string `json:"agent_status"`
-	WorkspaceID string `json:"workspace_id"`
-	TabID       string `json:"tab_id"`
-	PaneID      string `json:"pane_id"`
-	CWD         string `json:"cwd,omitempty"`
+	TerminalID    string `json:"terminal_id"`
+	TerminalTitle string `json:"terminal_title,omitempty"`
+	Name          string `json:"name,omitempty"`
+	Agent         string `json:"agent,omitempty"`
+	AgentStatus   string `json:"agent_status"`
+	WorkspaceID   string `json:"workspace_id"`
+	TabID         string `json:"tab_id"`
+	PaneID        string `json:"pane_id"`
+	CWD           string `json:"cwd,omitempty"`
 }
 
 func (c *client) agentList(ctx context.Context) ([]agentInfo, error) {
@@ -128,19 +164,42 @@ func (c *client) findByName(ctx context.Context, name string) (agentInfo, bool, 
 	return agentInfo{}, false, nil
 }
 
-// agentStart mirrors herdr's AgentStartParams. argv[0] is the command;
-// the rest are its arguments — the same shape as exec.Command.
-func (c *client) agentStart(ctx context.Context, name, cwd string, argv []string, env map[string]string) (agentInfo, error) {
-	params := map[string]any{
-		"name":  name,
-		"argv":  argv,
-		"focus": false,
-	}
+// tabCreate creates the shell pane that protocol-17 agent.start requires.
+func (c *client) tabCreate(ctx context.Context, cwd, label string) (tabID, paneID string, err error) {
+	params := map[string]any{"focus": false}
 	if cwd != "" {
 		params["cwd"] = cwd
 	}
-	if len(env) > 0 {
-		params["env"] = env
+	if label != "" {
+		params["label"] = label
+	}
+	var out struct {
+		Tab struct {
+			TabID string `json:"tab_id"`
+		} `json:"tab"`
+		RootPane struct {
+			PaneID string `json:"pane_id"`
+		} `json:"root_pane"`
+	}
+	if err := c.call(ctx, "tab.create", params, &out); err != nil {
+		return "", "", err
+	}
+	if out.Tab.TabID == "" || out.RootPane.PaneID == "" {
+		return "", "", fmt.Errorf("herdr: tab.create response omitted tab_id or root pane_id")
+	}
+	return out.Tab.TabID, out.RootPane.PaneID, nil
+}
+
+func (c *client) tabClose(ctx context.Context, tabID string) error {
+	return c.call(ctx, "tab.close", map[string]any{"tab_id": tabID}, nil)
+}
+
+// agentStart uses protocol 17's required {name, kind, pane_id} shape. The
+// pane must already exist at an interactive shell prompt.
+func (c *client) agentStart(ctx context.Context, name, kind, paneID string, args []string) (agentInfo, error) {
+	params := map[string]any{"name": name, "kind": kind, "pane_id": paneID}
+	if len(args) > 0 {
+		params["args"] = args
 	}
 	var out struct {
 		Agent agentInfo `json:"agent"`
@@ -151,21 +210,101 @@ func (c *client) agentStart(ctx context.Context, name, cwd string, argv []string
 	return out.Agent, nil
 }
 
-// agentSend writes text verbatim to the target's PTY (no key-name parsing —
-// mirrors herdr's handle_agent_send: runtime.try_send_bytes(text) as-is).
-// Callers wanting to submit a line must append "\r" themselves — herdr
-// encodes Enter as carriage return (13), not line feed (10); sending "\n"
-// types a literal newline into the input box without submitting it.
-func (c *client) agentSend(ctx context.Context, target, text string) error {
-	return c.call(ctx, "agent.send", map[string]any{"target": target, "text": text}, nil)
+// agentPrompt submits text to the target through herdr's protocol-17 prompt
+// verb. agent.prompt performs submission itself; callers must not append an
+// Enter byte.
+func (c *client) agentPrompt(ctx context.Context, target, text string) error {
+	return c.call(ctx, "agent.prompt", map[string]any{"target": target, "text": text}, nil)
 }
 
-// paneSendKeys sends named key sequences (e.g. "C-c", "Escape", "Up",
-// "Enter") to a pane, letting herdr translate them to the right terminal
-// escape codes. There is no target-flexible "agent.send_keys" — only
-// "pane.send_keys", which requires a resolved pane_id (see agentGet).
-func (c *client) paneSendKeys(ctx context.Context, paneID string, keys []string) error {
-	return c.call(ctx, "pane.send_keys", map[string]any{"pane_id": paneID, "keys": keys}, nil)
+// agentSendKeys sends named key sequences to an agent target. Protocol 17's
+// AgentSendKeysParams is target-addressed, so no pane-id lookup is needed.
+func (c *client) agentSendKeys(ctx context.Context, target string, keys []string) error {
+	return c.call(ctx, "agent.send_keys", map[string]any{"target": target, "keys": keys}, nil)
+}
+
+// agentWait performs one server-side long poll. Dial and write operations
+// are bounded independently, while the read has no client deadline: herdr may
+// legitimately hold it for timeout_ms or longer. Context cancellation closes
+// the socket so a blocked read returns promptly.
+func (c *client) agentWait(ctx context.Context, target string, until []string, timeoutMs int) (agentInfo, error) {
+	params := map[string]any{"target": target, "until": until, "timeout_ms": timeoutMs}
+	var out struct {
+		Agent agentInfo `json:"agent"`
+	}
+	if err := c.callLongPoll(ctx, "agent.wait", params, &out); err != nil {
+		return agentInfo{}, err
+	}
+	return out.Agent, nil
+}
+
+func (c *client) callLongPoll(ctx context.Context, method string, params, out any) error {
+	dialCtx, dialCancel := context.WithTimeout(ctx, c.rpcTimeout)
+	conn, err := c.dial(dialCtx)
+	dialCancel()
+	if err != nil {
+		return fmt.Errorf("herdr: connect %s: %w", c.socketPath, err)
+	}
+	defer conn.Close()
+
+	readDone := make(chan struct{})
+	defer close(readDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-readDone:
+		}
+	}()
+
+	id := fmt.Sprintf("%d", requestCounter.Add(1))
+	line, err := json.Marshal(rpcRequest{ID: id, Method: method, Params: params})
+	if err != nil {
+		return fmt.Errorf("herdr: marshal %s request: %w", method, err)
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(c.rpcTimeout))
+	if _, err := conn.Write(append(line, '\n')); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("herdr: write %s request: %w", method, err)
+	}
+	_ = conn.SetWriteDeadline(time.Time{})
+
+	respLine, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil && respLine == "" {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("herdr: read %s response: %w", method, err)
+	}
+	var resp rpcResponse
+	if err := json.Unmarshal([]byte(respLine), &resp); err != nil {
+		return fmt.Errorf("herdr: malformed %s response: %w", method, err)
+	}
+	if resp.Error != nil {
+		return fmt.Errorf("herdr: %s: %w", method, resp.Error)
+	}
+	if out == nil || len(resp.Result) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(resp.Result, out); err != nil {
+		return fmt.Errorf("herdr: unmarshal %s result: %w", method, err)
+	}
+	return nil
+}
+
+func isNonTransientRPCError(err error) bool {
+	var rpcErr *rpcError
+	if !errors.As(err, &rpcErr) {
+		return false
+	}
+	switch rpcErr.Code {
+	case "timeout", "unavailable", "server_busy":
+		return false
+	default:
+		return true
+	}
 }
 
 // agentRead mirrors AgentReadParams; source is "recent" (scrollback,
