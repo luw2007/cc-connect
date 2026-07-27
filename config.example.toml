@@ -748,6 +748,28 @@ level = "info" # debug, info, warn, error
 # app_token = "xapp-..."
 
 # =============================================================================
+# Auto-group Workspaces / 自动分组工作区
+# =============================================================================
+# Periodically diffs the agent's ListSessions() and auto-creates+binds one
+# chat group per newly discovered external workspace/session. Requires a
+# platform that implements GroupChatCreator (e.g. Feishu). Deliberately
+# independent of multi-workspace mode above -- this is for agents where ONE
+# Agent instance addresses many externally-owned workspaces by session ID
+# (cmux/herdr-style), not the per-directory agent-process pool
+# multi-workspace mode manages; both may be enabled on the same project.
+# 定期比对 agent 的 ListSessions()，为每个新发现的外部工作区/会话自动创建并
+# 绑定一个聊天群。需要平台实现 GroupChatCreator（例如飞书）。与上面的多工作区
+# 模式相互独立——适用于单个 Agent 实例按会话 ID 对接多个外部拥有的工作区的场景，
+# 而非多工作区模式管理的按目录分进程模型；两者可以在同一项目上同时启用。
+#
+# [[projects]]
+# name = "claude-auto-group"
+# auto_group_workspaces = true    # Enable the periodic sweep (default false)
+#                                  # 启用周期性扫描（默认 false）
+# auto_group_interval_ms = 15000  # Sweep interval in ms (default 15000; floor 5000)
+#                                  # 扫描间隔，毫秒（默认 15000；下限 5000）
+
+# =============================================================================
 # Project 1 / 项目 1
 # =============================================================================
 
@@ -1729,6 +1751,40 @@ app_secret = "your-feishu-app-secret"
 # api_base = "https://im.live.360.cn:8282"  # Optional override
 # ws_base = "wss://im.live.360.cn:8282"     # Optional override
 
+# =============================================================================
+# Project: Using cmux / 使用 cmux (uncomment to enable / 取消注释以启用)
+# =============================================================================
+# Requires: cmux running locally — https://github.com/manaflow-ai/cmux
+# Socket discovery: socket_path, CMUX_SOCKET_PATH, last-socket-path,
+# cmux-<uid>.sock, then the legacy ~/.config/cmux/cmux.sock. Each candidate
+# must answer ping; stale socket files are skipped. Permission approvals use
+# cmux Feed write-back, while terminal output and keys target the workspace's
+# agent surface.
+#
+# [[projects]]
+# name = "my-cmux-project"
+#
+# [projects.agent]
+# type = "cmux"
+#
+# [projects.agent.options]
+# socket_path = ""                 # optional explicit cmux socket
+# password = ""                    # optional cmux socket password
+# events_cursor_file = "~/.cc-connect/cmux_events_cursor.json"
+# workspace_filter = ""            # optional glob matched against custom title or cwd
+# create_workspaces = true          # create when no existing workspace matches
+# work_dir = "/path/to/project"    # absolute cwd used to re-match after cmux restarts
+# poll_interval_ms = 3000           # screen-stability fallback window
+# rpc_timeout_ms = 10000            # per-RPC watchdog; values below 1000 clamp to 1000
+# feed_reply_default_mode = "once" # once|always|all|bypass|deny
+# feed_hook_timeout_ms = 120000     # local Feed approval deadline
+#
+# [[projects.platforms]]
+# type = "telegram"
+#
+# [projects.platforms.options]
+# token = "your-telegram-bot-token"
+
 # QQ (via NapCat / OneBot v11) (uncomment to enable / 取消注释以启用)
 # Requires a OneBot v11 implementation running alongside your QQ client:
 # 需要一个 OneBot v11 实现配合 QQ 客户端运行：
@@ -1875,13 +1931,9 @@ app_secret = "your-feishu-app-secret"
 # =============================================================================
 # Requires: herdr running locally — https://github.com/ogulcancelik/herdr
 # 需要本机已启动 herdr（`herdr` 命令，socket 默认在 ~/.config/herdr/herdr.sock）
-# Drives a CLI process hosted in a herdr-managed pane. Unlike tmux (which
-# shares one long-lived session by default), this always creates a fresh
-# herdr pane per cc-connect session — herdr panes are cheap to create via
-# its socket API, so there's no "attach to my existing session" use case to
-# preserve. Turn completion uses herdr's own agent_status detection when the
-# wrapped CLI is one herdr recognizes (claude, codex, ...), falling back to
-# screen-stability polling otherwise (same heuristic as the tmux backend).
+# Drives or attaches to a CLI process in a herdr-managed pane. Turn completion
+# uses a per-pane event subscription with agent.wait fallback; visible output
+# is streamed by terminal snapshot diffs.
 #
 # [[projects]]
 # name = "my-herdr-project"
@@ -1890,12 +1942,18 @@ app_secret = "your-feishu-app-secret"
 # type = "herdr"
 #
 # [projects.agent.options]
-# init_command = "claude --dangerously-skip-permissions"  # required: command run in the new pane
+# init_command = "claude --dangerously-skip-permissions"  # required: recognized herdr agent kind plus optional args
 # work_dir = "/path/to/project"    # working directory for the pane (default: ".")
 # socket_path = ""                 # override herdr socket path (default: ~/.config/herdr/herdr.sock)
 # name_prefix = "cc-"              # prefix for auto-generated pane names (default: "cc-")
 # startup_wait_ms = 2000           # milliseconds to wait after init_command before accepting messages (default: 2000)
 # poll_interval_ms = 200           # output poll interval in milliseconds (default: 200)
+# attach_existing = true           # include and attach panes not created by cc-connect (default: true)
+# blocked_card = true              # surface blocked TUI menus as AskUserQuestion cards (default: true)
+# stream_output = true             # emit incremental visible-screen deltas (default: true)
+# subscribe_events = true          # use events.subscribe; false forces agent.wait fallback (default: true)
+# rpc_timeout_ms = 10000           # per-RPC watchdog; values below 1000 clamp to 1000
+# max_read_failures = 5            # transient read failures before the turn ends with an error (default: 5)
 #
 # [[projects.platforms]]
 # type = "telegram"
