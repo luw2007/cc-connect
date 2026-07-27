@@ -67,6 +67,14 @@ type cujAgent struct {
 	// setNextSessionEvents on cujAgent.
 	nextSessionEvents  []Event
 	nextSessionDelayMs int
+	// nextPermissionSession, when non-nil, is returned (and cleared) by the
+	// next StartSession call INSTEAD OF a bare cujAgentSession -- used by
+	// permission-flow CUJs (CMUX/HERDR) that need RespondPermission calls
+	// recorded, which the default no-op cujAgentSession.RespondPermission
+	// cannot provide. nextSessionEvents/nextSessionDelayMs set beforehand
+	// still apply to its embedded *cujAgentSession. See
+	// cujPermissionAgentSession and setNextPermissionSession below.
+	nextPermissionSession *cujPermissionAgentSession
 }
 
 func (a *cujAgent) Name() string { return "cuj" }
@@ -81,6 +89,15 @@ func (a *cujAgent) StartSession(_ context.Context, _ string) (AgentSession, erro
 			err = errors.New("cujAgent: simulated start failure")
 		}
 		return nil, err
+	}
+	if ps := a.nextPermissionSession; ps != nil {
+		a.nextPermissionSession = nil
+		ps.pendingEvents = a.nextSessionEvents
+		ps.pendingDelayMs = a.nextSessionDelayMs
+		a.nextSessionEvents = nil
+		a.nextSessionDelayMs = 0
+		a.sessions = append(a.sessions, ps.cujAgentSession)
+		return ps, nil
 	}
 	a.nextID++
 	s := newCUJAgentSession()
@@ -209,6 +226,86 @@ func (s *cujAgentSession) getSentPrompts() []string {
 	out := make([]string, len(s.sentPrompts))
 	copy(out, s.sentPrompts)
 	return out
+}
+
+// cujPermissionAgentSession wraps a cujAgentSession to additionally record
+// every RespondPermission call (requestID, behavior, updatedInput) and to
+// implement ExternalResolutionNotifier -- capabilities the shared
+// cujAgentSession (a no-op RespondPermission, no notifier) does not have.
+// Used by the CMUX/HERDR permission-flow CUJs; the embedded
+// *cujAgentSession still drives the event stream unchanged, so
+// setNextSessionEvents-style multi-event turns keep working.
+type cujPermissionAgentSession struct {
+	*cujAgentSession
+
+	mu          sync.Mutex
+	permReqIDs  []string
+	permResults []PermissionResult
+	notifyFn    func(note string)
+	notifyReqID string
+	cancelCalls int
+}
+
+func newCUJPermissionAgentSession() *cujPermissionAgentSession {
+	return &cujPermissionAgentSession{cujAgentSession: newCUJAgentSession()}
+}
+
+func (s *cujPermissionAgentSession) RespondPermission(requestID string, res PermissionResult) error {
+	s.mu.Lock()
+	s.permReqIDs = append(s.permReqIDs, requestID)
+	s.permResults = append(s.permResults, res)
+	s.mu.Unlock()
+	return nil
+}
+
+// OnExternalResolution implements ExternalResolutionNotifier, letting
+// CMUX2 simulate a permission decided outside cc-connect (e.g. a cmux Feed
+// UI click, or a feed-timeout fallback).
+func (s *cujPermissionAgentSession) OnExternalResolution(requestID string, notify func(note string)) func() {
+	s.mu.Lock()
+	s.notifyFn = notify
+	s.notifyReqID = requestID
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		s.cancelCalls++
+		s.mu.Unlock()
+	}
+}
+
+// fireExternal invokes the registered notify callback, failing the test if
+// none was registered or it was registered for a different request.
+func (s *cujPermissionAgentSession) fireExternal(t *testing.T, requestID, note string) {
+	t.Helper()
+	s.mu.Lock()
+	fn := s.notifyFn
+	gotID := s.notifyReqID
+	s.mu.Unlock()
+	if fn == nil {
+		t.Fatal("OnExternalResolution was never registered")
+	}
+	if gotID != requestID {
+		t.Fatalf("registered for request %q, want %q", gotID, requestID)
+	}
+	fn(note)
+}
+
+func (s *cujPermissionAgentSession) permCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.permReqIDs)
+}
+
+// lastPermCall returns the most recent RespondPermission call, or zero
+// values if none happened yet.
+func (s *cujPermissionAgentSession) lastPermCall() (requestID string, result PermissionResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.permReqIDs)
+	if n == 0 {
+		return "", PermissionResult{}
+	}
+	return s.permReqIDs[n-1], s.permResults[n-1]
 }
 
 // ---------------------------------------------------------------------------
@@ -2291,6 +2388,15 @@ func (a *cujAgent) setNextSessionEvents(events []Event, delayMs int) {
 	a.nextSessionDelayMs = delayMs
 }
 
+// setNextPermissionSession arranges for the next StartSession call to
+// return s (wrapping its embedded cujAgentSession) instead of a bare
+// cujAgentSession -- see cujPermissionAgentSession's doc comment for why.
+func (a *cujAgent) setNextPermissionSession(s *cujPermissionAgentSession) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.nextPermissionSession = s
+}
+
 // ===========================================================================
 // CUJ-STREAM-1 · After a permission prompt (AskUserQuestion or regular
 // permission request) the agent emits more text in the same turn. The user
@@ -2521,5 +2627,360 @@ func TestCUJ_H4_FeishuTopicsKeepWorkspaceBindingsIsolated(t *testing.T) {
 	sendTopicCommand("om_root_b", "/workspace")
 	if got := lastReply(); !strings.Contains(got, normalizeWorkspacePath(workspaceB)) {
 		t.Fatalf("topic B changed after topic A unbind: %q", got)
+
+// ===========================================================================
+// CUJ-CMUX1 · Approve a tool-use permission request via the same
+// text/callback path a Feishu card's "Allow" button produces, then keep
+// using the now-free session.
+//
+// design doc docs/plans/2026-07-26-cmux-herdr-bridge-design.md §1 CUJ 1 /
+// §7 gate: TestCUJ_CMUX1_PermissionApproveViaCard.
+//
+// ≥3 user actions: (1) send a prompt that triggers a Bash permission
+// request, (2) reply "allow" (identical to what a card's Allow button
+// sends), (3) send a follow-up prompt on the same, now-unblocked session.
+// ===========================================================================
+
+func TestCUJ_CMUX1_PermissionApproveViaCard(t *testing.T) {
+	env := newCUJEnv(t)
+
+	permSess := newCUJPermissionAgentSession()
+	env.agent.setNextPermissionSession(permSess)
+	env.agent.setNextSessionEvents([]Event{
+		{
+			Type:         EventPermissionRequest,
+			RequestID:    "req-cmux-1",
+			ToolName:     "Bash",
+			ToolInput:    "npm test",
+			ToolInputRaw: map[string]any{"command": "npm test"},
+		},
+		{Type: EventResult, Content: "tests passed", Done: true},
+	}, 0)
+
+	// === Action 1: user starts a turn; the agent needs to run a Bash
+	// command and asks for permission. ===
+	env.userSends("mia", "please run the test suite")
+
+	env.waitFor("permission prompt shown", 2*time.Second, func() bool {
+		return env.sentContains("Bash") && env.sentContains("npm test")
+	})
+	env.plat.clearSent()
+
+	// === Action 2: user replies "allow" — handlePendingPermission treats
+	// this identically to a card's Allow button (same callback path). ===
+	env.userSends("mia", "allow")
+
+	env.waitFor("agent received RespondPermission(allow)", 2*time.Second, func() bool {
+		return permSess.permCallCount() == 1
+	})
+	if reqID, result := permSess.lastPermCall(); reqID != "req-cmux-1" || result.Behavior != "allow" {
+		t.Fatalf("RespondPermission = (reqID=%q, behavior=%q), want (req-cmux-1, allow)", reqID, result.Behavior)
+	}
+
+	// Turn continues to its result.
+	env.waitFor("final result shown", 2*time.Second, func() bool {
+		return env.sentContains("tests passed")
+	})
+
+	// === Action 3: follow-up message on the now-free session succeeds
+	// without any special user intervention. ===
+	env.plat.clearSent()
+	env.userSends("mia", "thanks, all good")
+	env.waitFor("follow-up reply", 2*time.Second, func() bool {
+		return len(env.plat.getSent()) >= 1
+	})
+}
+
+// ===========================================================================
+// CUJ-CMUX2 · When a pending permission request is decided OUTSIDE
+// cc-connect (e.g. someone answers it in the cmux Feed UI, or the backend's
+// own timeout falls back to resolving it directly), the Feishu-side card
+// updates to reflect that instead of hanging forever, and the turn keeps
+// going. Exercises ExternalResolutionNotifier end-to-end via a real turn.
+//
+// design doc §1 CUJ 1 ("if someone answers in the cmux UI instead, the
+// Feishu card updates to '已在 cmux 处理'") / §7 gate:
+// TestCUJ_CMUX2_ResolvedElsewhereUpdatesCard.
+//
+// Sub-cases cover both note contracts from I18n.ResolvePermissionNote:
+// empty note -> MsgPermissionResolvedElsewhere; the fallback-timeout
+// sentinel -> MsgPermissionFeedFellBack.
+//
+// ≥3 user actions per sub-case: (1) send a prompt that triggers a
+// permission request, (2) the external authority resolves it (not a chat
+// reply — this is exactly the behavior under test) and the user sees the
+// resolution note, (3) a subsequent message on the freed session flows
+// normally.
+// ===========================================================================
+
+func TestCUJ_CMUX2_ResolvedElsewhereUpdatesCard(t *testing.T) {
+	runSubCase := func(t *testing.T, userID, note, wantNoteSubstring string) {
+		env := newCUJEnv(t)
+		reqID := "req-" + userID
+
+		permSess := newCUJPermissionAgentSession()
+		env.agent.setNextPermissionSession(permSess)
+		env.agent.setNextSessionEvents([]Event{
+			{
+				Type:         EventPermissionRequest,
+				RequestID:    reqID,
+				ToolName:     "Bash",
+				ToolInput:    "npm test",
+				ToolInputRaw: map[string]any{"command": "npm test"},
+			},
+			{Type: EventResult, Content: "tests passed", Done: true},
+		}, 0)
+
+		// === Action 1: user starts a turn; agent asks permission. ===
+		env.userSends(userID, "please run the test suite")
+		env.waitFor("permission prompt shown", 2*time.Second, func() bool {
+			return env.sentContains("Bash")
+		})
+		env.plat.clearSent()
+
+		// === Action 2: the request is resolved OUTSIDE cc-connect (e.g. a
+		// cmux Feed UI click) — not a chat reply. The user must still see a
+		// clear resolution note, RespondPermission must NOT be called (the
+		// decision was made by the external authority, not relayed by
+		// cc-connect), and the turn must continue to its result. ===
+		permSess.fireExternal(t, reqID, note)
+
+		env.waitFor("resolution note shown", 2*time.Second, func() bool {
+			return env.sentContains(wantNoteSubstring)
+		})
+		if got := permSess.permCallCount(); got != 0 {
+			t.Fatalf("RespondPermission called %d time(s) for an externally-resolved request; want 0", got)
+		}
+		env.waitFor("turn result shown", 2*time.Second, func() bool {
+			return env.sentContains("tests passed")
+		})
+
+		// === Action 3: pending was cleared — a subsequent message flows
+		// as a normal turn, no user intervention needed. ===
+		env.plat.clearSent()
+		env.userSends(userID, "one more thing")
+		env.waitFor("follow-up reply", 2*time.Second, func() bool {
+			return len(env.plat.getSent()) >= 1
+		})
+	}
+
+	t.Run("empty_note_resolved_elsewhere", func(t *testing.T) {
+		runSubCase(t, "cmux2a", "", "resolved elsewhere")
+	})
+	t.Run("fallback_timeout_note_feed_fell_back", func(t *testing.T) {
+		runSubCase(t, "cmux2b", PermissionNoteFallbackTimeout, "timed out here")
+	})
+}
+
+// ===========================================================================
+// CUJ-HERDR1 · herdr blocked on a TUI menu: the agent surfaces the blocked
+// screen as an AskUserQuestion permission request; the user answers via the
+// card callback format (askq:qIdx:optIdx), the picked option reaches the
+// agent as an "allow" with the label in UpdatedInput, and the session keeps
+// working afterward.
+//
+// design doc §1 CUJ 2 ("herdr blocked: claude stuck on a TUI menu → Feishu
+// card with the screen tail + option buttons ... → tap → agent.send_keys
+// unblocks it") / §7 gate: TestCUJ_HERDR1_BlockedCardUnblocksViaButtons.
+//
+// ≥3 user actions: (1) send a prompt that gets the agent stuck on a menu,
+// (2) tap an option via its askq:0:N callback, (3) send another prompt once
+// unblocked.
+// ===========================================================================
+
+func TestCUJ_HERDR1_BlockedCardUnblocksViaButtons(t *testing.T) {
+	env := newCUJEnv(t)
+
+	permSess := newCUJPermissionAgentSession()
+	env.agent.setNextPermissionSession(permSess)
+
+	screenTail := "claude wants to overwrite config.yaml\n❯ 1. Overwrite file\n  2. Skip\n  3. Abort"
+	options := []UserQuestionOption{
+		{Label: "Overwrite file", Description: "replace the existing file"},
+		{Label: "Skip", Description: "leave the file untouched"},
+		{Label: "Abort", Description: "stop the operation"},
+	}
+	env.agent.setNextSessionEvents([]Event{
+		{
+			Type:      EventPermissionRequest,
+			RequestID: "req-herdr-1",
+			ToolName:  "AskUserQuestion",
+			Questions: []UserQuestion{{Question: screenTail, Options: options}},
+		},
+		{Type: EventResult, Content: "unblocked, continuing", Done: true},
+	}, 0)
+
+	// === Action 1: user starts a turn; herdr's TUI menu blocks the agent,
+	// which surfaces the screen tail and its options as a question card. ===
+	env.userSends("herdruser", "please install the deps")
+
+	env.waitFor("blocked question card shown", 2*time.Second, func() bool {
+		return env.sentContains("overwrite config.yaml") &&
+			env.sentContains("Overwrite file") && env.sentContains("Skip") && env.sentContains("Abort")
+	})
+	env.plat.clearSent()
+
+	// === Action 2: user taps the second option via the card callback
+	// format askq:qIdx:optIdx (1-based option index). ===
+	env.userSends("herdruser", "askq:0:2")
+
+	env.waitFor("agent received the picked option", 2*time.Second, func() bool {
+		return permSess.permCallCount() == 1
+	})
+	reqID, result := permSess.lastPermCall()
+	if reqID != "req-herdr-1" {
+		t.Fatalf("RespondPermission requestID = %q, want req-herdr-1", reqID)
+	}
+	if result.Behavior != "allow" {
+		t.Fatalf("RespondPermission Behavior = %q, want allow", result.Behavior)
+	}
+	answers, ok := result.UpdatedInput["answers"].(map[string]any)
+	if !ok {
+		t.Fatalf("UpdatedInput missing answers map: %+v", result.UpdatedInput)
+	}
+	if answers[screenTail] != "Skip" {
+		t.Fatalf("answers[screenTail] = %v, want Skip", answers[screenTail])
+	}
+
+	// User sees the confirmation text the engine echoes back.
+	if !env.sentContains("**Skip**") {
+		t.Fatalf("expected confirmation echo containing the picked label; sent=%v", env.plat.getSent())
+	}
+
+	// Session completes.
+	env.waitFor("turn result shown", 2*time.Second, func() bool {
+		return env.sentContains("unblocked, continuing")
+	})
+
+	// === Action 3: user sends another prompt — normal turn on the same,
+	// now-unblocked session. ===
+	env.plat.clearSent()
+	env.userSends("herdruser", "now run the tests")
+	env.waitFor("follow-up reply", 2*time.Second, func() bool {
+		return len(env.plat.getSent()) >= 1
+	})
+}
+
+// ===========================================================================
+// CUJ-WSGROUP1 · Per-workspace auto-groups: SetAutoGroupWorkspaces creates
+// exactly one group chat per external agent session, a redundant sweep
+// never creates a duplicate, and a user message sent into a created group
+// chat routes to THAT session's agent — not any other externally-owned
+// session sharing the same engine.
+//
+// design doc §3.4 ("Per-workspace auto-groups") / §7 gate:
+// TestCUJ_WSGROUP1_AutoGroupPerWorkspace.
+//
+// ≥3 user-visible actions: (1) two group chats get created and announced,
+// one per external session, (2) a second sweep is a no-op (no duplicate
+// groups/announcements), (3)+(4) a message sent into each created group
+// routes to that group's own session, never the other one.
+// ===========================================================================
+
+func TestCUJ_WSGROUP1_AutoGroupPerWorkspace(t *testing.T) {
+	sessByID := map[string]*cujAgentSession{
+		"wsgroup-sess-1": newCUJAgentSession(),
+		"wsgroup-sess-2": newCUJAgentSession(),
+	}
+	agent := &controllableAgent{
+		listFn: func() ([]AgentSessionInfo, error) {
+			return []AgentSessionInfo{
+				{ID: "wsgroup-sess-1", ProjectPath: "/tmp/wsgroup-1", Summary: "wsgroup-1"},
+				{ID: "wsgroup-sess-2", ProjectPath: "/tmp/wsgroup-2", Summary: "wsgroup-2"},
+			}, nil
+		},
+		startSessionFn: func(_ context.Context, sessionID string) (AgentSession, error) {
+			if sess, ok := sessByID[sessionID]; ok {
+				return sess, nil
+			}
+			return newCUJAgentSession(), nil
+		},
+	}
+	plat := &stubAutoGroupPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "test"},
+		nextChatID:         "wsgroup-chat",
+	}
+	e := NewEngine("wsgrouptest", agent, []Platform{plat}, "", LangEnglish)
+	e.SetDataDir(t.TempDir())
+
+	// === Action 1: enable auto-group workspaces — each of the agent's two
+	// external sessions gets its own group chat, announced to the user. ===
+	e.SetAutoGroupWorkspaces(true, 5*time.Second)
+	defer e.Stop()
+	e.autoGroupSweep() // idempotent with the eager background sweep (TryLock)
+
+	projectKey := "autogroup:wsgrouptest"
+	channelKey1, binding1 := waitForSessionBound(t, e.workspaceBindings, projectKey, "wsgroup-sess-1")
+	channelKey2, binding2 := waitForSessionBound(t, e.workspaceBindings, projectKey, "wsgroup-sess-2")
+
+	if channelKey1 == channelKey2 {
+		t.Fatalf("both sessions bound to the same group chat %q; want distinct groups per session", channelKey1)
+	}
+	if !binding1.Activated || !binding2.Activated {
+		t.Fatalf("expected both bindings activated, got binding1.Activated=%v binding2.Activated=%v", binding1.Activated, binding2.Activated)
+	}
+	if got := plat.createCallCount(); got != 2 {
+		t.Fatalf("expected exactly one CreateGroupChat call per session (2 total), got %d", got)
+	}
+	if got := len(plat.getSent()); got != 2 {
+		t.Fatalf("expected exactly one announcement per created group (2 total), got %d: %v", got, plat.getSent())
+	}
+
+	// === Action 2: a second sweep must create nothing new (dedup by
+	// session ID) and must not re-announce either group. ===
+	e.autoGroupSweep()
+	if got := plat.createCallCount(); got != 2 {
+		t.Fatalf("second sweep: expected CreateGroupChat still called only twice, got %d", got)
+	}
+	if got := len(plat.getSent()); got != 2 {
+		t.Fatalf("second sweep: expected no new announcements, got %d: %v", got, plat.getSent())
+	}
+
+	waitForPrompt := func(sess *cujAgentSession, want string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, p := range sess.getSentPrompts() {
+				if strings.Contains(p, want) {
+					return
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("session never received a prompt containing %q; got %v", want, sess.getSentPrompts())
+	}
+
+	// === Action 3: a user message sent into session 1's created group
+	// chat routes to session 1's agent, not session 2's. ===
+	sessionKey1 := plat.Name() + ":" + legacyWorkspaceChannelKey(channelKey1) + ":"
+	e.ReceiveMessage(plat, &Message{
+		SessionKey: sessionKey1,
+		Platform:   plat.Name(),
+		MessageID:  "m-group1",
+		UserID:     "alice",
+		UserName:   "alice",
+		Content:    "status update please",
+		ReplyCtx:   "ctx-group1",
+	})
+	waitForPrompt(sessByID["wsgroup-sess-1"], "status update please")
+	if got := sessByID["wsgroup-sess-2"].getSentPrompts(); len(got) != 0 {
+		t.Fatalf("session 2 must not receive session 1's message, got %v", got)
+	}
+
+	// === Action 4: a message sent into session 2's group routes to
+	// session 2's agent, not session 1's. ===
+	sessionKey2 := plat.Name() + ":" + legacyWorkspaceChannelKey(channelKey2) + ":"
+	e.ReceiveMessage(plat, &Message{
+		SessionKey: sessionKey2,
+		Platform:   plat.Name(),
+		MessageID:  "m-group2",
+		UserID:     "bob",
+		UserName:   "bob",
+		Content:    "anything blocked?",
+		ReplyCtx:   "ctx-group2",
+	})
+	waitForPrompt(sessByID["wsgroup-sess-2"], "anything blocked?")
+	if got := sessByID["wsgroup-sess-1"].getSentPrompts(); len(got) != 1 {
+		t.Fatalf("session 1 must not receive session 2's message, got %v", got)
 	}
 }
