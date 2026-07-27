@@ -334,6 +334,44 @@ func TestPrintUsage_ListsCronExecCommand(t *testing.T) {
 	}
 }
 
+func TestPrintUsage_ListsAgentCommand(t *testing.T) {
+	out := captureStderr(t, printUsage)
+
+	if !strings.Contains(out, "agent              Directly control an existing agent target") {
+		t.Fatalf("printUsage() output missing agent command:\n%s", out)
+	}
+	for _, line := range []string{
+		"    list             Discover targets and copy revisions with --json",
+		"    tail             Read output using an exact target revision",
+		"    key              Send one exact key using an exact target revision",
+		"    requests         Inspect pending requests using an exact target revision",
+		"    approve          Respond to a permission using exact target/request revisions",
+		"    answer           Answer indexed questions using exact target/request revisions",
+	} {
+		if !strings.Contains(out, line) {
+			t.Errorf("printUsage() agent section missing line %q:\n%s", line, out)
+		}
+	}
+}
+
+func TestDispatchAgentSubcommand(t *testing.T) {
+	var got []string
+	handled := dispatchAgentSubcommand([]string{"agent", "list", "--json"}, func(args []string) {
+		got = append([]string(nil), args...)
+	})
+	if !handled {
+		t.Fatal("dispatchAgentSubcommand did not handle agent")
+	}
+	if want := []string{"list", "--json"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("dispatched args = %#v, want %#v", got, want)
+	}
+	if dispatchAgentSubcommand([]string{"send"}, func([]string) {
+		t.Fatal("runner called for unrelated command")
+	}) {
+		t.Fatal("dispatchAgentSubcommand handled unrelated command")
+	}
+}
+
 func TestCanonicalCronSubcommand_ManualTriggerAliases(t *testing.T) {
 	for _, sub := range []string{"exec", "run", "trigger"} {
 		if got := canonicalCronSubcommand(sub); got != "exec" {

@@ -16,6 +16,7 @@ import (
 
 func init() {
 	core.RegisterAgent("herdr", New)
+	core.RegisterAgentController("herdr", NewController)
 }
 
 // Agent drives a CLI process hosted in a herdr-managed pane. Unlike the tmux

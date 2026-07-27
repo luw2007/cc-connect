@@ -179,23 +179,45 @@ func (fb *feedBridge) resync(ctx context.Context) error {
 		return fmt.Errorf("cmux: feed.list: %w", err)
 	}
 	now := time.Now()
-	byRequestID := make(map[string]feedItem)
+	requestIDCounts := make(map[string]int, len(items))
 	for _, item := range items {
 		if item.RequestID != "" {
+			requestIDCounts[item.RequestID]++
+		}
+	}
+	byRequestID := make(map[string]feedItem, len(items))
+	for _, item := range items {
+		if item.RequestID != "" && requestIDCounts[item.RequestID] == 1 {
 			byRequestID[item.RequestID] = item
 		}
 	}
-
 	var actions []feedAction
 	fb.mu.Lock()
+	for requestID, count := range requestIDCounts {
+		if count <= 1 {
+			continue
+		}
+		if ref := fb.outstanding[requestID]; ref != nil && !ref.replying {
+			note := ""
+			actions = append(actions, feedAction{request: ref, event: core.Event{Type: core.EventPermissionResolved, RequestID: requestID, Content: note}, note: note, resolved: true})
+		}
+		delete(fb.outstanding, requestID)
+	}
 	for _, item := range items {
-		if item.Kind != "permissionRequest" || item.Status != "pending" || item.RequestID == "" {
+		if item.Kind != "permissionRequest" || item.Status != "pending" || item.RequestID == "" || requestIDCounts[item.RequestID] != 1 {
 			continue
 		}
 		if _, exists := fb.outstanding[item.RequestID]; exists {
 			continue
 		}
 		if until, replied := fb.repliedUntil[item.RequestID]; replied && now.Before(until) {
+			continue
+		}
+		if item.ToolName == "ExitPlanMode" {
+			continue
+		}
+		event, ok := permissionEvent(item)
+		if !ok {
 			continue
 		}
 		session, tried := fb.resolveSessionLocked(item)
@@ -205,12 +227,36 @@ func (fb *feedBridge) resync(ctx context.Context) error {
 		}
 		ref := &pendingRef{item: item, session: session, deadline: now.Add(fb.hookTimeout)}
 		fb.outstanding[item.RequestID] = ref
-		actions = append(actions, feedAction{request: ref, event: permissionEvent(item)})
+		actions = append(actions, feedAction{request: ref, event: event})
 	}
 
 	for requestID, ref := range fb.outstanding {
 		item, present := byRequestID[requestID]
 		if present && item.Status == "pending" {
+			if item.Kind != "permissionRequest" || item.ToolName == "ExitPlanMode" {
+				delete(fb.outstanding, requestID)
+				if !ref.replying {
+					note := ""
+					actions = append(actions, feedAction{request: ref, event: core.Event{Type: core.EventPermissionResolved, RequestID: requestID, Content: note}, note: note, resolved: true})
+				}
+				continue
+			}
+			if _, ok := permissionEvent(item); !ok {
+				delete(fb.outstanding, requestID)
+				if !ref.replying {
+					note := ""
+					actions = append(actions, feedAction{request: ref, event: core.Event{Type: core.EventPermissionResolved, RequestID: requestID, Content: note}, note: note, resolved: true})
+				}
+				continue
+			}
+			if session, resolved := fb.strictSessionLocked(item); (resolved && session != ref.session) || (!resolved && item.WorkstreamID != ref.item.WorkstreamID) {
+				delete(fb.outstanding, requestID)
+				if !ref.replying {
+					note := ""
+					actions = append(actions, feedAction{request: ref, event: core.Event{Type: core.EventPermissionResolved, RequestID: requestID, Content: note}, note: note, resolved: true})
+				}
+				continue
+			}
 			ref.item = item
 			ref.missCount = 0
 			continue
@@ -257,37 +303,33 @@ func (fb *feedBridge) resync(ctx context.Context) error {
 
 func (fb *feedBridge) resolveSessionLocked(item feedItem) (*cmuxSession, []string) {
 	tried := []string{"workstream_id=" + item.WorkstreamID}
-	if item.WorkstreamID != "" {
-		if workspaceID, ok := fb.mapper.workspaceIDForWorkstream(item.WorkstreamID); ok {
-			tried = append(tried, "workspace_id="+workspaceID)
-			if session := fb.sessions[workspaceID]; session != nil {
-				return session, tried
-			}
-		}
+	session, resolved := fb.strictSessionLocked(item)
+	if !resolved {
+		return nil, tried
 	}
-	if item.CWD != "" {
-		tried = append(tried, "cwd="+item.CWD)
-		var matches []*cmuxSession
-		for _, session := range fb.sessions {
-			if session.workDir == item.CWD {
-				matches = append(matches, session)
-			}
-		}
-		if len(matches) == 1 {
-			return matches[0], tried
-		}
-		if len(matches) > 1 {
-			tried = append(tried, "cwd_ambiguous=true")
-		}
-	}
-	return nil, tried
+	workspaceID, _ := fb.mapper.workspaceIDForWorkstream(item.WorkstreamID)
+	tried = append(tried, "workspace_id="+workspaceID)
+	return session, tried
 }
 
-func permissionEvent(item feedItem) core.Event {
+func (fb *feedBridge) strictSessionLocked(item feedItem) (*cmuxSession, bool) {
+	if item.WorkstreamID == "" {
+		return nil, false
+	}
+	workspaceID, ok := fb.mapper.workspaceIDForWorkstream(item.WorkstreamID)
+	if !ok {
+		return nil, false
+	}
+	return fb.sessions[workspaceID], true
+}
+func permissionEvent(item feedItem) (core.Event, bool) {
 	input := make(map[string]any)
 	if item.ToolInput != "" {
-		if err := json.Unmarshal([]byte(item.ToolInput), &input); err != nil {
-			slog.Warn("cmux: decode feed tool_input failed", "request_id", item.RequestID, "err", err)
+		if err := json.Unmarshal([]byte(item.ToolInput), &input); err != nil || input == nil {
+			if err != nil {
+				slog.Warn("cmux: decode feed tool_input failed", "request_id", item.RequestID, "err", err)
+			}
+			return core.Event{}, false
 		}
 	}
 	event := core.Event{
@@ -297,9 +339,78 @@ func permissionEvent(item feedItem) core.Event {
 		ToolInputRaw: input,
 	}
 	if item.ToolName == "AskUserQuestion" {
-		event.Questions = parseQuestions(input)
+		questions, ok := parseBridgeQuestions(input)
+		if !ok {
+			return core.Event{}, false
+		}
+		event.Questions = questions
 	}
-	return event
+	return event, true
+}
+func parseBridgeQuestions(input map[string]any) ([]core.UserQuestion, bool) {
+	rawQuestions, ok := input["questions"].([]any)
+	if !ok || len(rawQuestions) == 0 {
+		return nil, false
+	}
+	questions := make([]core.UserQuestion, 0, len(rawQuestions))
+	for _, raw := range rawQuestions {
+		questionMap, ok := raw.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		questionText, ok := questionMap["question"].(string)
+		if !ok || strings.TrimSpace(questionText) == "" {
+			return nil, false
+		}
+		question := core.UserQuestion{Question: questionText}
+		if rawHeader, present := questionMap["header"]; present {
+			header, ok := rawHeader.(string)
+			if !ok {
+				return nil, false
+			}
+			question.Header = header
+		}
+		if rawMultiSelect, present := questionMap["multiSelect"]; present {
+			multiSelect, ok := rawMultiSelect.(bool)
+			if !ok {
+				return nil, false
+			}
+			question.MultiSelect = multiSelect
+		}
+		if rawOptions, present := questionMap["options"]; present {
+			options, ok := rawOptions.([]any)
+			if !ok {
+				return nil, false
+			}
+			seenLabels := make(map[string]struct{}, len(options))
+			question.Options = make([]core.UserQuestionOption, 0, len(options))
+			for _, rawOption := range options {
+				optionMap, ok := rawOption.(map[string]any)
+				if !ok {
+					return nil, false
+				}
+				label, ok := optionMap["label"].(string)
+				if !ok || strings.TrimSpace(label) == "" {
+					return nil, false
+				}
+				if _, duplicate := seenLabels[label]; duplicate {
+					return nil, false
+				}
+				seenLabels[label] = struct{}{}
+				option := core.UserQuestionOption{Label: label}
+				if rawDescription, present := optionMap["description"]; present {
+					description, ok := rawDescription.(string)
+					if !ok {
+						return nil, false
+					}
+					option.Description = description
+				}
+				question.Options = append(question.Options, option)
+			}
+		}
+		questions = append(questions, question)
+	}
+	return questions, true
 }
 
 func parseQuestions(input map[string]any) []core.UserQuestion {
@@ -397,8 +508,13 @@ func (fb *feedBridge) replyPermission(ctx context.Context, requestID, mode strin
 
 	var err error
 	if item.ToolName == "AskUserQuestion" {
-		selections := questionSelections(updatedInput, permissionEvent(item).Questions)
-		err = fb.client.feedQuestionReply(ctx, requestID, selections)
+		event, ok := permissionEvent(item)
+		if !ok {
+			err = fmt.Errorf("invalid AskUserQuestion tool_input")
+		} else {
+			selections := questionSelections(updatedInput, event.Questions)
+			err = fb.client.feedQuestionReply(ctx, requestID, selections)
+		}
 	} else {
 		err = fb.client.feedPermissionReply(ctx, requestID, mode)
 	}

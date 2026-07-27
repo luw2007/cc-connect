@@ -240,6 +240,9 @@ func main() {
 
 	// Handle subcommands before flag parsing
 	if len(os.Args) > 1 {
+		if dispatchAgentSubcommand(os.Args[1:], runAgent) {
+			return
+		}
 		switch os.Args[1] {
 		case "config-example":
 			fmt.Print(ccconnect.ConfigExampleTOML)
@@ -1776,6 +1779,14 @@ Commands:
 
   send               Send a message to an active session via internal API
                      (-m <text> | --stdin, -p <project>, -s <session>)
+
+  agent              Directly control an existing agent target
+    list             Discover targets and copy revisions with --json
+    tail             Read output using an exact target revision
+    key              Send one exact key using an exact target revision
+    requests         Inspect pending requests using an exact target revision
+    approve          Respond to a permission using exact target/request revisions
+    answer           Answer indexed questions using exact target/request revisions
 
   cron               Manage scheduled tasks
     add              Create a scheduled task (-c <expr> --prompt <text>)

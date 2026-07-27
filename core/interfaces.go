@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -398,6 +399,288 @@ type AllSessionsLister interface {
 
 type AgentSessionWorkspaceValidator interface {
 	SessionBelongsToCurrentWorkspace(sessionID string) bool
+}
+
+// AgentController lists existing external-agent targets. Implementations MUST
+// NOT create a target while listing. Other control operations are deliberately
+// optional capabilities because external backends do not share a universal
+// permission or terminal protocol.
+type AgentController interface {
+	ListAgents(ctx context.Context) ([]AgentControlTarget, error)
+}
+
+// AgentControlCapability identifies an operation a target supports now.
+type AgentControlCapability string
+
+const (
+	AgentControlCapabilityTail       AgentControlCapability = "tail"
+	AgentControlCapabilityPrompt     AgentControlCapability = "prompt"
+	AgentControlCapabilityKey        AgentControlCapability = "key"
+	AgentControlCapabilityRequests   AgentControlCapability = "requests"
+	AgentControlCapabilityPermission AgentControlCapability = "permission"
+	AgentControlCapabilityQuestion   AgentControlCapability = "question"
+)
+
+// AgentControlTarget is an exact target observed in one complete backend
+// snapshot. Revision is opaque, required, and MUST be supplied unchanged to
+// every subsequent operation; implementations reject a missing or stale value.
+type AgentControlTarget struct {
+	ID           string                   `json:"id"`
+	Revision     string                   `json:"revision"`
+	Backend      string                   `json:"backend"`
+	Kind         string                   `json:"kind"`
+	Directory    string                   `json:"directory,omitempty"`
+	Status       string                   `json:"status,omitempty"`
+	Capabilities []AgentControlCapability `json:"capabilities"`
+}
+
+func (t AgentControlTarget) Supports(capability AgentControlCapability) bool {
+	for _, candidate := range t.Capabilities {
+		if candidate == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// AgentControlCapabilitySupported reports whether controller implements the
+// optional interface required to safely advertise capability. Permission and
+// question response also require request inspection, so callers can obtain a
+// canonical request projection before dispatching a response.
+func AgentControlCapabilitySupported(controller AgentController, capability AgentControlCapability) bool {
+	switch capability {
+	case AgentControlCapabilityTail:
+		_, ok := controller.(AgentControlTailer)
+		return ok
+	case AgentControlCapabilityPrompt:
+		_, ok := controller.(AgentControlPrompter)
+		return ok
+	case AgentControlCapabilityKey:
+		_, ok := controller.(AgentControlKeySender)
+		return ok
+	case AgentControlCapabilityRequests:
+		_, ok := controller.(AgentControlRequestLister)
+		return ok
+	case AgentControlCapabilityPermission:
+		_, lists := controller.(AgentControlRequestLister)
+		_, responds := controller.(AgentControlPermissionResponder)
+		return lists && responds
+	case AgentControlCapabilityQuestion:
+		_, lists := controller.(AgentControlRequestLister)
+		_, responds := controller.(AgentControlQuestionResponder)
+		return lists && responds
+	default:
+		return false
+	}
+}
+
+// AgentControlSupportedCapabilities filters candidate target-level
+// capabilities to those the controller actually implements. Controllers MUST
+// use this helper, or equivalent stricter logic, when building ListAgents
+// results; a target may further omit an operation unsafe for its current state.
+func AgentControlSupportedCapabilities(controller AgentController, candidates ...AgentControlCapability) []AgentControlCapability {
+	capabilities := make([]AgentControlCapability, 0, len(candidates))
+	seen := make(map[AgentControlCapability]struct{}, len(candidates))
+	for _, capability := range candidates {
+		if _, duplicate := seen[capability]; duplicate || !AgentControlCapabilitySupported(controller, capability) {
+			continue
+		}
+		seen[capability] = struct{}{}
+		capabilities = append(capabilities, capability)
+	}
+	return capabilities
+}
+
+// AgentControlTargetRef is the immutable portion of a target accepted by a
+// control operation. Implementations MUST reload canonical backend state and
+// compare it before performing a side effect.
+type AgentControlTargetRef struct {
+	ID       string `json:"id"`
+	Revision string `json:"revision"`
+}
+
+func (t AgentControlTarget) Ref() AgentControlTargetRef {
+	return AgentControlTargetRef{ID: t.ID, Revision: t.Revision}
+}
+
+// Valid reports whether a target reference has both required opaque fields.
+func (r AgentControlTargetRef) Valid() bool {
+	return strings.TrimSpace(r.ID) != "" && strings.TrimSpace(r.Revision) != ""
+}
+
+// AgentControlTailer is an optional terminal-output capability. An absent or
+// changed target returns ErrAgentControlTargetStale before terminal access.
+type AgentControlTailer interface {
+	TailAgent(ctx context.Context, target AgentControlTargetRef, lines int) (string, error)
+}
+
+// AgentControlPrompter is an optional prompt-submission capability. An absent
+// or changed target returns ErrAgentControlTargetStale before submission.
+type AgentControlPrompter interface {
+	SendAgentPrompt(ctx context.Context, target AgentControlTargetRef, message string) error
+}
+
+// AgentControlKeySender is an optional raw-key capability. An absent or
+// changed target returns ErrAgentControlTargetStale before key injection.
+type AgentControlKeySender interface {
+	SendAgentKey(ctx context.Context, target AgentControlTargetRef, key string) error
+}
+
+// AgentControlRequestKind distinguishes backend requests with different
+// response semantics.
+type AgentControlRequestKind string
+
+const (
+	AgentControlRequestPermission AgentControlRequestKind = "permission"
+	AgentControlRequestQuestion   AgentControlRequestKind = "question"
+)
+
+// AgentControlRequest is an untrusted display projection of a pending request.
+// Its metadata MUST NOT be accepted as authorization input. Use Ref when
+// answering; implementations reload canonical backend data before deciding.
+type AgentControlRequest struct {
+	ID               string                  `json:"id"`
+	Revision         string                  `json:"revision"`
+	Kind             AgentControlRequestKind `json:"kind"`
+	ToolName         string                  `json:"tool_name,omitempty"`
+	Input            map[string]any          `json:"input,omitempty"`
+	Questions        []UserQuestion          `json:"questions,omitempty"`
+	AllowedDecisions []string                `json:"allowed_decisions,omitempty"`
+}
+
+// AgentControlRequestRef is the immutable request identity accepted by a
+// response operation. Missing/changed requests return ErrAgentControlRequestStale.
+type AgentControlRequestRef struct {
+	ID       string `json:"id"`
+	Revision string `json:"revision"`
+}
+
+func (r AgentControlRequest) Ref() AgentControlRequestRef {
+	return AgentControlRequestRef{ID: r.ID, Revision: r.Revision}
+}
+
+// Valid reports whether a request reference has both required opaque fields.
+func (r AgentControlRequestRef) Valid() bool {
+	return strings.TrimSpace(r.ID) != "" && strings.TrimSpace(r.Revision) != ""
+}
+
+// AgentControlRequestLister is an optional pending-request inspection capability.
+// Missing or changed targets return ErrAgentControlTargetStale before request
+// inspection. A caller that has not verified this optional interface returns
+// ErrAgentControlUnsupported without invoking the backend.
+type AgentControlRequestLister interface {
+	ListAgentRequests(ctx context.Context, target AgentControlTargetRef) ([]AgentControlRequest, error)
+}
+
+// AgentControlPermissionResponder is an optional capability for backends with
+// a real permission-decision protocol. Missing/changed targets return
+// ErrAgentControlTargetStale; missing/changed or non-permission requests return
+// ErrAgentControlRequestStale; malformed or unsupported decisions return
+// ErrAgentControlInvalidAnswer. Every check occurs before the write RPC.
+type AgentControlPermissionResponder interface {
+	RespondAgentPermission(ctx context.Context, target AgentControlTargetRef, request AgentControlRequestRef, decision string) error
+}
+
+// AgentControlQuestionAnswer is one indexed answer to a structured question.
+// Exactly one of Selections or Text must be non-empty.
+type AgentControlQuestionAnswer struct {
+	Index      int      `json:"index"`
+	Selections []string `json:"selections,omitempty"`
+	Text       string   `json:"text,omitempty"`
+}
+
+// AgentControlQuestionResponder is an optional capability for backends with a
+// real structured-question protocol. Missing/changed targets return
+// ErrAgentControlTargetStale; missing/changed or non-question requests return
+// ErrAgentControlRequestStale; malformed, incomplete, or unsupported answer
+// sets return ErrAgentControlInvalidAnswer. Every check occurs before the write
+// RPC.
+type AgentControlQuestionResponder interface {
+	AnswerAgentQuestions(ctx context.Context, target AgentControlTargetRef, request AgentControlRequestRef, answers []AgentControlQuestionAnswer) error
+}
+
+var (
+	ErrAgentControllerNotRegistered = errors.New("agent controller not registered")
+	ErrAgentControlUnsupported      = errors.New("agent control operation unsupported")
+	ErrAgentControlTargetStale      = errors.New("agent control target is missing or changed")
+	ErrAgentControlRequestStale     = errors.New("agent control request is missing or changed")
+	ErrAgentControlInvalidAnswer    = errors.New("agent control answer is invalid")
+)
+
+// ValidateAgentControlTargetRef maps an absent or malformed target reference
+// to the sentinel every controller operation uses before contacting a target.
+func ValidateAgentControlTargetRef(ref AgentControlTargetRef) error {
+	if !ref.Valid() {
+		return ErrAgentControlTargetStale
+	}
+	return nil
+}
+
+// ValidateAgentControlRequestRef maps an absent or malformed request reference
+// to the sentinel every response operation uses before reloading request state.
+func ValidateAgentControlRequestRef(ref AgentControlRequestRef) error {
+	if !ref.Valid() {
+		return ErrAgentControlRequestStale
+	}
+	return nil
+}
+
+// Valid reports whether an answer has a non-negative index and exactly one
+// non-empty representation. Responders additionally validate uniqueness,
+// completeness, option membership, and multi-select rules against canonical
+// backend request state.
+func (a AgentControlQuestionAnswer) Valid() bool {
+	if a.Index < 0 || (len(a.Selections) == 0) == (strings.TrimSpace(a.Text) == "") {
+		return false
+	}
+	for _, selection := range a.Selections {
+		if strings.TrimSpace(selection) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateAgentControlQuestionAnswers validates a complete indexed answer set
+// against canonical backend questions. Adapters call it only after reloading
+// canonical backend state; callers must never use an untrusted display request
+// as the question source.
+func ValidateAgentControlQuestionAnswers(questions []UserQuestion, answers []AgentControlQuestionAnswer) error {
+	if len(questions) == 0 || len(answers) != len(questions) {
+		return ErrAgentControlInvalidAnswer
+	}
+	answered := make([]bool, len(questions))
+	for _, answer := range answers {
+		if !answer.Valid() || answer.Index >= len(questions) || answered[answer.Index] {
+			return ErrAgentControlInvalidAnswer
+		}
+		answered[answer.Index] = true
+		question := questions[answer.Index]
+		if len(question.Options) == 0 {
+			if len(answer.Selections) != 0 {
+				return ErrAgentControlInvalidAnswer
+			}
+			continue
+		}
+		if answer.Text != "" || (!question.MultiSelect && len(answer.Selections) != 1) {
+			return ErrAgentControlInvalidAnswer
+		}
+		allowed := make(map[string]struct{}, len(question.Options))
+		for _, option := range question.Options {
+			allowed[option.Label] = struct{}{}
+		}
+		selected := make(map[string]struct{}, len(answer.Selections))
+		for _, selection := range answer.Selections {
+			if _, exists := allowed[selection]; !exists {
+				return ErrAgentControlInvalidAnswer
+			}
+			if _, duplicate := selected[selection]; duplicate {
+				return ErrAgentControlInvalidAnswer
+			}
+			selected[selection] = struct{}{}
+		}
+	}
+	return nil
 }
 
 // AgentSession represents a running interactive agent session with a persistent process.

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/chenhg5/cc-connect/core"
 )
 
 // Method names are the raw v2 socket RPC verbs (dotted), NOT the cmux CLI's
@@ -172,6 +174,25 @@ func resolveSocket(ctx context.Context, explicit, password string) (string, erro
 	})
 }
 
+func resolveControllerSocket(ctx context.Context, explicit, password string) (string, error) {
+	return resolveControllerSocketWithProbe(ctx, explicit, password, func(probeCtx context.Context, path, probePassword string) error {
+		return newClient(path, probePassword).ping(probeCtx)
+	})
+}
+
+func resolveControllerSocketWithProbe(ctx context.Context, explicit, password string, probe socketProbe) (string, error) {
+	if explicit == "" {
+		return resolveSocketWithProbe(ctx, "", password, probe)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	err := probe(probeCtx, explicit, password)
+	cancel()
+	if err != nil {
+		return "", fmt.Errorf("cmux: explicit controller socket %q is not responsive: %w", explicit, err)
+	}
+	return explicit, nil
+}
+
 type socketProbe func(context.Context, string, string) error
 
 func resolveSocketWithProbe(ctx context.Context, explicit, password string, probe socketProbe) (string, error) {
@@ -252,12 +273,34 @@ func (c *client) feedList(ctx context.Context) ([]feedItem, error) {
 	return result.Items, nil
 }
 
+type feedReplyResult struct {
+	Delivered bool `json:"delivered"`
+}
+
+func (c *client) feedReply(ctx context.Context, method string, params any) error {
+	var rawResult json.RawMessage
+	if err := c.call(ctx, method, params, &rawResult); err != nil {
+		return err
+	}
+	var result feedReplyResult
+	if len(rawResult) == 0 || string(rawResult) == "null" {
+		return fmt.Errorf("cmux: %s result did not confirm delivery: %w", method, core.ErrAgentControlRequestStale)
+	}
+	if err := json.Unmarshal(rawResult, &result); err != nil {
+		return fmt.Errorf("cmux: decode %s delivery result: %v: %w", method, err, core.ErrAgentControlRequestStale)
+	}
+	if !result.Delivered {
+		return fmt.Errorf("cmux: %s reply was not delivered: %w", method, core.ErrAgentControlRequestStale)
+	}
+	return nil
+}
+
 func (c *client) feedPermissionReply(ctx context.Context, requestID, mode string) error {
-	return c.call(ctx, methodFeedPermissionReply, map[string]any{"request_id": requestID, "mode": mode}, nil)
+	return c.feedReply(ctx, methodFeedPermissionReply, map[string]any{"request_id": requestID, "mode": mode})
 }
 
 func (c *client) feedQuestionReply(ctx context.Context, requestID string, selections []string) error {
-	return c.call(ctx, methodFeedQuestionReply, map[string]any{"request_id": requestID, "selections": selections}, nil)
+	return c.feedReply(ctx, methodFeedQuestionReply, map[string]any{"request_id": requestID, "selections": selections})
 }
 
 // workspaceInfo mirrors workspace.list's per-item shape. workspace.create's

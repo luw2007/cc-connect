@@ -331,6 +331,52 @@ func TestCorrelation_WorkstreamToWorkspace(t *testing.T) {
 	}
 }
 
+func TestSessionMapperAmbiguousWorkstreamFailsClosedAcrossSources(t *testing.T) {
+	dir := t.TempDir()
+	writeControlHookStore(t, dir, "claude", hookSessionStore{
+		ActiveByWorkspace: map[string]hookSessionRef{
+			"WORKSPACE-A": {SessionID: "SESSION-SHARED", UpdatedAt: 10},
+			"WORKSPACE-B": {SessionID: "SESSION-SHARED", UpdatedAt: 20},
+		},
+		Sessions: map[string]hookSession{
+			"SESSION-A": {SessionID: "SESSION-SHARED", WorkspaceID: "WORKSPACE-A"},
+			"SESSION-B": {SessionID: "SESSION-SHARED", WorkspaceID: "WORKSPACE-B"},
+		},
+	})
+	writeControlHookStore(t, dir, "codex", hookSessionStore{
+		ActiveByWorkspace: map[string]hookSessionRef{
+			"WORKSPACE-C": {SessionID: "SESSION-SHARED", UpdatedAt: 30},
+		},
+		Sessions: map[string]hookSession{
+			"SESSION-SHARED": {SessionID: "SESSION-SHARED", WorkspaceID: "WORKSPACE-C"},
+		},
+	})
+
+	for iteration := 0; iteration < 100; iteration++ {
+		mapper := newSessionMapper(dir)
+		if workspaceID, ok := mapper.workspaceIDForWorkstream("claude-SESSION-SHARED"); ok {
+			t.Fatalf("iteration %d: ambiguous claude workstream routed to %q", iteration, workspaceID)
+		}
+		if workspaceID, ok := mapper.workspaceIDForWorkstream("codex-SESSION-SHARED"); !ok || workspaceID != "WORKSPACE-C" {
+			t.Fatalf("iteration %d: distinct codex workstream = %q, %v; want WORKSPACE-C", iteration, workspaceID, ok)
+		}
+	}
+}
+
+func TestSessionMapperRejectsMismatchedActiveWorkspaceSurface(t *testing.T) {
+	dir := t.TempDir()
+	writeControlHookStore(t, dir, "claude", hookSessionStore{
+		ActiveByWorkspace: map[string]hookSessionRef{"WORKSPACE-A": {SessionID: "SESSION"}},
+		Sessions: map[string]hookSession{
+			"SESSION": {SessionID: "SESSION", SurfaceID: "SURFACE-B", WorkspaceID: "WORKSPACE-B"},
+		},
+	})
+	mapper := newSessionMapper(dir)
+	if workspaceID, ok := mapper.workspaceIDForSurface("SURFACE-B"); !ok || workspaceID != "WORKSPACE-B" {
+		t.Fatalf("mismatched active session surface = %q, %v; want canonical WORKSPACE-B", workspaceID, ok)
+	}
+}
+
 func TestSessionMapper_NewestSessionWinsDeterministically(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "codex-hook-sessions.json")
@@ -371,6 +417,84 @@ func TestSocketResolver_LastSocketPath(t *testing.T) {
 	}
 	if resolved != wantPath {
 		t.Fatalf("resolved = %q, want %q", resolved, wantPath)
+	}
+}
+
+func TestControllerSocketResolverExplicitFailureDoesNotFallBack(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CMUX_SOCKET_PATH", "mock://fallback")
+	var probed []string
+	resolved, err := resolveControllerSocketWithProbe(context.Background(), " mock://explicit ", "", func(_ context.Context, path, _ string) error {
+		probed = append(probed, path)
+		if path == "mock://fallback" {
+			return nil
+		}
+		return errors.New("fixture failure")
+	})
+	if err == nil {
+		t.Fatalf("resolved explicit socket as %q, want failure", resolved)
+	}
+	if !reflect.DeepEqual(probed, []string{" mock://explicit "}) {
+		t.Fatalf("probed paths = %v, want only the exact explicit controller binding", probed)
+	}
+}
+
+func TestControllerSocketResolverReturnsExactExplicitBinding(t *testing.T) {
+	explicit := " mock://explicit "
+	resolved, err := resolveControllerSocketWithProbe(context.Background(), explicit, "secret", func(_ context.Context, path, password string) error {
+		if path != explicit || password != "secret" {
+			t.Fatalf("probe binding = %q/%q, want exact explicit path and password", path, password)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("resolve explicit controller socket: %v", err)
+	}
+	if resolved != explicit {
+		t.Fatalf("resolved = %q, want exact binding %q", resolved, explicit)
+	}
+}
+
+func TestControllerSocketResolverUnsetUsesDiscovery(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CMUX_SOCKET_PATH", "mock://discovered")
+	resolved, err := resolveControllerSocketWithProbe(context.Background(), "", "", func(_ context.Context, path, _ string) error {
+		if path == "mock://discovered" {
+			return nil
+		}
+		return errors.New("not the fixture socket")
+	})
+	if err != nil {
+		t.Fatalf("resolve unset controller socket: %v", err)
+	}
+	if resolved != "mock://discovered" {
+		t.Fatalf("resolved = %q, want discovered controller socket", resolved)
+	}
+}
+
+func TestSocketResolverExplicitFailureStillFallsBackForAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CMUX_SOCKET_PATH", "mock://fallback")
+	var probed []string
+	resolved, err := resolveSocketWithProbe(context.Background(), "mock://explicit", "", func(_ context.Context, path, _ string) error {
+		probed = append(probed, path)
+		if path == "mock://fallback" {
+			return nil
+		}
+		return errors.New("fixture failure")
+	})
+	if err != nil {
+		t.Fatalf("resolve Agent.New socket: %v", err)
+	}
+	if resolved != "mock://fallback" {
+		t.Fatalf("resolved = %q, want Agent.New fallback socket", resolved)
+	}
+	wantProbed := []string{"mock://explicit", "mock://fallback"}
+	if !reflect.DeepEqual(probed, wantProbed) {
+		t.Fatalf("probed paths = %v, want %v", probed, wantProbed)
 	}
 }
 
@@ -603,6 +727,62 @@ func TestClientCall_CanceledContextUnblocksStalledRead(t *testing.T) {
 		_ = serverConn.Close()
 		<-done
 		t.Fatal("call stayed blocked after its context was canceled")
+	}
+}
+
+func TestClientFeedReplies_RequireDeliveredResult(t *testing.T) {
+	replies := []struct {
+		name   string
+		method string
+		call   func(*client) error
+	}{
+		{
+			name:   "permission",
+			method: methodFeedPermissionReply,
+			call: func(client *client) error {
+				return client.feedPermissionReply(context.Background(), "REQ-PERMISSION", "once")
+			},
+		},
+		{
+			name:   "question",
+			method: methodFeedQuestionReply,
+			call: func(client *client) error {
+				return client.feedQuestionReply(context.Background(), "REQ-QUESTION", []string{"answer"})
+			},
+		},
+	}
+	results := []struct {
+		name      string
+		result    json.RawMessage
+		wantStale bool
+	}{
+		{name: "delivered", result: json.RawMessage(`{"delivered":true}`)},
+		{name: "not_delivered", result: json.RawMessage(`{"delivered":false}`), wantStale: true},
+		{name: "missing", wantStale: true},
+		{name: "null", result: json.RawMessage(`null`), wantStale: true},
+		{name: "malformed", result: json.RawMessage(`{"delivered":"yes"}`), wantStale: true},
+	}
+	for _, reply := range replies {
+		for _, result := range results {
+			t.Run(reply.name+"/"+result.name, func(t *testing.T) {
+				server := newMockCmuxServer(t, func(method string, _ json.RawMessage) (json.RawMessage, *rpcError) {
+					if method != reply.method {
+						return nil, &rpcError{Code: "unexpected", Message: method}
+					}
+					return result.result, nil
+				})
+				err := reply.call(server.client())
+				if result.wantStale {
+					if !errors.Is(err, core.ErrAgentControlRequestStale) {
+						t.Fatalf("reply error = %v, want stale request", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("reply error = %v, want delivery success", err)
+				}
+			})
+		}
 	}
 }
 
