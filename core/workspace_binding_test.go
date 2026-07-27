@@ -234,5 +234,29 @@ func TestWorkspaceBindingManager_InheritChannelKeyConcurrentTopics(t *testing.T)
 		if b := mgr.Lookup(projectKey, target); b == nil || b.Workspace != "/workspace/a" {
 			t.Fatalf("topic %q did not inherit the default: %+v", target, b)
 		}
+
+// TestWorkspaceBindingManager_LookupBySessionID_ReturnsCopy is the B2
+// regression for LookupBySessionID's second defect: the returned binding
+// must be a copy, not the manager's internal pointer -- a caller mutating
+// it (or a concurrent MarkActivated / refreshLocked replacing the map)
+// must never corrupt state the manager itself relies on.
+func TestWorkspaceBindingManager_LookupBySessionID_ReturnsCopy(t *testing.T) {
+	dir := t.TempDir()
+	mgr := NewWorkspaceBindingManager(filepath.Join(dir, "bindings.json"))
+	mgr.BindSession("project:claude", workspaceChannelKey("slack", "C1"), "chan1", "/path1", "sess-1")
+
+	_, b, found := mgr.LookupBySessionID("project:claude", "sess-1")
+	if !found {
+		t.Fatal("expected binding to be found")
+	}
+	b.ChannelName = "corrupted"
+	b.Activated = true
+
+	_, b2, found := mgr.LookupBySessionID("project:claude", "sess-1")
+	if !found {
+		t.Fatal("expected binding to still be found")
+	}
+	if b2.ChannelName == "corrupted" || b2.Activated {
+		t.Fatalf("mutating a LookupBySessionID result corrupted the manager's internal state: %+v", b2)
 	}
 }

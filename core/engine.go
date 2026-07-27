@@ -460,6 +460,21 @@ type Engine struct {
 	sendWorkDirMu                sync.RWMutex
 	sendWorkDirs                 map[string]string // sessionKey → work_dir assigned by send --cwd
 
+	// Per-workspace auto-groups (SetAutoGroupWorkspaces): deliberately
+	// independent of multiWorkspace/workspacePool above -- this is for
+	// agents that address many externally-owned workspaces through ONE
+	// Agent instance (one Feishu group per external workspace), not the
+	// per-directory agent-process pool multiWorkspace manages.
+	autoGroupMu      sync.Mutex
+	autoGroupEnabled bool
+	autoGroupOnce    sync.Once
+	// autoGroupSweepMu serializes autoGroupSweep across the ticker loop and
+	// the /watch "bind unbound groups" on-demand trigger (B2): without it,
+	// two concurrent sweeps can both pass LookupBySessionID (not yet bound)
+	// before either calls BindSession, and each calls CreateGroupChat,
+	// producing duplicate groups for one session.
+	autoGroupSweepMu sync.Mutex
+
 	// Terminal observation (--observe)
 	observeEnabled    bool
 	observeProjectDir string // ~/.claude/projects/{projectKey}
@@ -835,6 +850,207 @@ func (e *Engine) SetWorkspaceIdleTimeout(d time.Duration) {
 // existing local directories as targets. When false, init remains git-URL only.
 func (e *Engine) SetWorkspaceInitAllowLocalPaths(allow bool) {
 	e.workspaceInitAllowLocalPaths = allow
+}
+
+// minAutoGroupInterval floors SetAutoGroupWorkspaces' sweep interval so a
+// zero/tiny configured value cannot panic time.NewTicker or busy-loop the
+// agent backend and platform API (C5/E4).
+const minAutoGroupInterval = 5 * time.Second
+
+// SetAutoGroupWorkspaces enables the periodic "one chat group per external
+// workspace" feature (design doc §3.4): a background loop diffs
+// agent.ListSessions() and creates+binds a group chat for every newly
+// discovered external session. Deliberately independent of
+// SetMultiWorkspace/workspacePool: that machinery is for agents needing a
+// SEPARATE agent instance per work_dir (claude-code style); this is for
+// agents where ONE Agent instance addresses many externally-owned
+// workspaces by session ID -- agents shaped this way typically never
+// enable multi-workspace mode at all. If SetMultiWorkspace already
+// ran for this project, its WorkspaceBindingManager is reused as-is so the
+// dedup-by-session-ID index has exactly one store (C4); otherwise one is
+// created here at the SAME default path SetMultiWorkspace would use
+// (data_dir/workspace_bindings.json), so the two features can never fork
+// into two divergent store files even if both happen to be enabled --
+// autoGroupSweep's own "autogroup:"+e.name namespace (B3) keeps their
+// RECORDS apart even though they share that one file: multi-workspace
+// routing (lookupEffectiveWorkspaceBinding/Unbind) reads "project:"+e.name
+// and unbinds on a missing directory, which an externally-owned session's
+// ProjectPath routinely triggers -- sharing that namespace would get an
+// auto-group binding unbound by the first routing touch and a new group
+// created every sweep after.
+// Idempotent: only the first enabling call starts the loop (sync.Once) and
+// runs one eager sweep before it (m6) so the first group does not wait a
+// full interval to appear. Interval is clamped to minAutoGroupInterval.
+// Like SetMultiWorkspace, this must be called during the single-threaded
+// init sequence before Engine.Start() launches any goroutines:
+// e.workspaceBindings is written below without a lock, the same
+// startup-only invariant every other consumer of that field already
+// relies on (m7).
+func (e *Engine) SetAutoGroupWorkspaces(enabled bool, interval time.Duration) {
+	if !enabled {
+		return
+	}
+	if e.workspaceBindings == nil {
+		e.workspaceBindings = NewWorkspaceBindingManager(filepath.Join(e.dataDir, "workspace_bindings.json"))
+	}
+	if interval < minAutoGroupInterval {
+		interval = minAutoGroupInterval
+	}
+	e.autoGroupMu.Lock()
+	e.autoGroupEnabled = true
+	e.autoGroupMu.Unlock()
+	e.autoGroupOnce.Do(func() {
+		go e.runAutoGroupLoop(interval)
+	})
+}
+
+func (e *Engine) isAutoGroupEnabled() bool {
+	e.autoGroupMu.Lock()
+	defer e.autoGroupMu.Unlock()
+	return e.autoGroupEnabled
+}
+
+func (e *Engine) runAutoGroupLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	// Sweep once immediately (m6): otherwise the first group doesn't
+	// appear until a full interval (default 15s) after startup. Safe to
+	// run concurrently with any other trigger now that autoGroupSweep
+	// serializes itself (B2).
+	e.autoGroupSweep()
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-ticker.C:
+			e.autoGroupSweep()
+		}
+	}
+}
+
+// autoGroupSweep diffs agent.ListSessions() against the workspace binding
+// store and ensures every external session has a bound group chat. Also
+// invoked (in a goroutine) by the /watch "bind unbound groups" button for
+// an on-demand pass -- see executeCardAction's "/watch" case -- so the
+// ticker loop and that on-demand goroutine can call this concurrently.
+// autoGroupSweepMu's TryLock (B2) makes a sweep already in flight win and
+// any concurrent caller a no-op instead of racing the same
+// LookupBySessionID-then-CreateGroupChat window (the reviewer reproduced
+// two group chats for one session, 5/5 runs, before this guard existed).
+func (e *Engine) autoGroupSweep() {
+	if !e.isAutoGroupEnabled() || e.workspaceBindings == nil || e.agent == nil {
+		return
+	}
+	if !e.autoGroupSweepMu.TryLock() {
+		return // a sweep is already in flight; nothing to add
+	}
+	defer e.autoGroupSweepMu.Unlock()
+
+	creatorPlatform := e.firstGroupChatCreator()
+	if creatorPlatform == nil {
+		return // no platform in this project can create group chats
+	}
+	rc, ok := creatorPlatform.(ReplyContextReconstructor)
+	if !ok {
+		return
+	}
+
+	sessions, err := e.agent.ListSessions(e.ctx)
+	if err != nil {
+		slog.Warn("auto-group: ListSessions failed, skipping this sweep", "project", e.name, "err", err)
+		return
+	}
+
+	// B3: auto-group's own namespace -- never "project:"+e.name (see the
+	// doc comment on SetAutoGroupWorkspaces above for why sharing it is
+	// unsafe when multi-workspace mode is also enabled on this project).
+	projectKey := "autogroup:" + e.name
+	for _, info := range sessions {
+		if info.ID == "" {
+			continue // can't dedup or attach without a session identity
+		}
+		e.autoGroupEnsure(creatorPlatform, rc, projectKey, info)
+	}
+}
+
+func (e *Engine) firstGroupChatCreator() Platform {
+	for _, p := range e.platforms {
+		if _, ok := p.(GroupChatCreator); ok {
+			return p
+		}
+	}
+	return nil
+}
+
+// autoGroupEnsure creates (once) and fully activates a group chat for one
+// external session. Split into two phases so a partial failure never
+// creates a duplicate group (C4): CreateGroupChat + BindSession run only
+// when no binding exists yet for info.ID; a binding that exists but is not
+// yet Activated retries only the remaining switch/reconstruct/announce
+// steps using the already-recorded chat -- never a second CreateGroupChat
+// call for the same session.
+func (e *Engine) autoGroupEnsure(p Platform, rc ReplyContextReconstructor, projectKey string, info AgentSessionInfo) {
+	creator, ok := p.(GroupChatCreator)
+	if !ok {
+		return
+	}
+
+	channelKey, binding, found := e.workspaceBindings.LookupBySessionID(projectKey, info.ID)
+	if found {
+		if binding.Activated {
+			return
+		}
+	} else {
+		workspace := ""
+		label := info.Summary
+		if info.ProjectPath != "" {
+			workspace = normalizeWorkspacePath(info.ProjectPath)
+			if base := filepath.Base(workspace); base != "" && base != "." {
+				label = base
+			}
+		}
+		if label == "" {
+			label = info.ID
+		}
+		groupName := e.nextGroupName("", label)
+
+		chatID, err := creator.CreateGroupChat(e.ctx, groupName, "", "")
+		if err != nil {
+			slog.Warn("auto-group: create group chat failed", "session", info.ID, "err", err)
+			return
+		}
+		channelKey = workspaceChannelKey(p.Name(), chatID)
+		e.workspaceBindings.BindSession(projectKey, channelKey, groupName, workspace, info.ID)
+		_, binding, found = e.workspaceBindings.LookupBySessionID(projectKey, info.ID)
+		if !found {
+			return // defensive: BindSession above always makes this true
+		}
+		slog.Info("auto-group: created and bound", "session", info.ID, "chat_id", chatID, "group", groupName)
+	}
+
+	chatID := legacyWorkspaceChannelKey(channelKey)
+	newSessionKey := p.Name() + ":" + chatID + ":"
+
+	// e.GetSessions()/e.agent are deliberately the top-level pair, not a
+	// per-workspace one (m9): info came from e.agent.ListSessions() (the
+	// top-level agent), and this channel's binding lives in the
+	// "autogroup:" namespace (B3), which sessionContextForKey /
+	// lookupEffectiveWorkspaceBinding never see -- so future interactive
+	// turns in this chat resolve back to this same top-level pair too, even
+	// when multi-workspace is also enabled on this project.
+	sm := e.GetSessions()
+	if sm == nil {
+		return
+	}
+	sm.SwitchToAgentSession(newSessionKey, info.ID, e.agent.Name(), info.Summary)
+
+	rctx, err := rc.ReconstructReplyCtx(newSessionKey)
+	if err != nil {
+		slog.Warn("auto-group: reconstruct reply ctx failed, will retry next sweep", "session", info.ID, "err", err)
+		return
+	}
+	e.send(p, rctx, e.i18n.Tf(MsgAutoGroupCreated, binding.ChannelName))
+	e.workspaceBindings.MarkActivated(projectKey, channelKey)
 }
 
 func (e *Engine) runIdleReaper() {
@@ -4859,6 +5075,22 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				autoApprove := state.approveAll
 				state.mu.Unlock()
 
+				// Background permission policy (design doc §3.3): for a session
+				// that can report external resolution, auto-denying here would
+				// write a real DENY into an external approval authority (e.g. a
+				// third-party UI's own permission store), which is worse than
+				// doing nothing. Skip the auto-deny entirely: send the card to
+				// the bound chat and install pending state so a later chat
+				// reply / card tap resolves it via the normal
+				// handlePendingPermission path, same as a foreground request.
+				// /yolo (autoApprove) keeps the existing auto-allow behavior.
+				if !autoApprove {
+					if notifier, ok := agentSession.(ExternalResolutionNotifier); ok {
+						e.handleBackgroundExternalPermission(ctx, state, p, replyCtx, notifier, event)
+						continue
+					}
+				}
+
 				result := PermissionResult{Behavior: "deny", Message: "denied: no active user turn"}
 				if autoApprove {
 					result = PermissionResult{Behavior: "allow", UpdatedInput: event.ToolInputRaw}
@@ -4900,6 +5132,87 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 			}
 		}
 	}
+}
+
+// handleBackgroundExternalPermission implements the background/unsolicited
+// EventPermissionRequest policy (design doc §3.3) for a session that
+// implements ExternalResolutionNotifier: the permission card is sent to the
+// bound chat and pending state is installed the same way the interactive
+// path does, so a later chat reply or card tap resolves it through the
+// normal handlePendingPermission flow. A dedicated goroutine (not the hot
+// reader loop, which must keep iterating) waits for whichever resolution
+// arrives first -- a chat reply/card tap (pending.resolve() via
+// handlePendingPermission) or the adapter's own notify -- and deregisters
+// the notifier afterward. ctx is the reader's own context, so the goroutine
+// also exits (without ever resolving) if the reader is torn down first.
+func (e *Engine) handleBackgroundExternalPermission(ctx context.Context, state *interactiveState, p Platform, replyCtx any, notifier ExternalResolutionNotifier, event Event) {
+	pending := &pendingPermission{
+		RequestID:    event.RequestID,
+		ToolName:     event.ToolName,
+		ToolInput:    event.ToolInputRaw,
+		InputPreview: event.ToolInput,
+		Resolved:     make(chan struct{}),
+	}
+
+	// Never displace a live background pending (B1): the card's buttons
+	// carry no request ID -- perm:allow/deny/allow_all resolve whatever
+	// sits in state.pending (handlePendingPermission) -- so installing a
+	// second pending here would let a tap on THIS card silently answer the
+	// OTHER request. Only one actionable card at a time; the displaced
+	// request still gets a notifier registration below so the external
+	// authority can resolve it, it just never gets a card (or a chat note)
+	// of its own.
+	state.mu.Lock()
+	busy := state.pending != nil
+	if !busy {
+		state.pending = pending
+	}
+	state.mu.Unlock()
+
+	if busy {
+		slog.Warn("background permission: another request is already pending, no card sent",
+			"session", event.SessionID, "request_id", event.RequestID)
+	} else {
+		permLimit := e.display.ToolMaxLen
+		if permLimit > 0 {
+			permLimit = permLimit * 8 / 5
+		}
+		toolInput := truncateIf(event.ToolInput, permLimit)
+		prompt := fmt.Sprintf(e.i18n.T(MsgPermissionPrompt), event.ToolName, toolInput)
+		// sendPermissionPrompt, not sendExternalPermissionPrompt (m3): this
+		// request originated from the adapter's Events() channel, not from
+		// a hook, so there is no re-emission recursion to avoid -- it gets
+		// the same title and HookEventPermissionRequested emission as any
+		// other permission prompt.
+		e.sendPermissionPrompt(p, replyCtx, prompt, event.ToolName, toolInput)
+	}
+
+	reqID := event.RequestID
+	toolName := event.ToolName
+	cancel := notifier.OnExternalResolution(reqID, func(note string) {
+		state.mu.Lock()
+		stillPending := state.pending != nil && state.pending.RequestID == reqID
+		if stillPending {
+			state.pending = nil
+		}
+		state.mu.Unlock()
+		if stillPending {
+			note = e.i18n.ResolvePermissionNote(note)
+			if toolName != "" {
+				note = fmt.Sprintf("%s (%s)", note, toolName)
+			}
+			e.send(p, replyCtx, note)
+		}
+		pending.resolve()
+	})
+
+	go func() {
+		select {
+		case <-pending.Resolved:
+		case <-ctx.Done():
+		}
+		cancel()
+	}()
 }
 
 type agentErrorHandler struct {
@@ -5649,6 +5962,53 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 				e.sendPermissionPrompt(p, replyCtx, prompt, event.ToolName, toolInput)
 			}
 
+			// If this session can report a permission decided outside
+			// cc-connect (another client's UI, or the backend's own
+			// prompt/timeout resolving it directly), register a one-shot
+			// notifier. This does NOT change the wait below -- notify
+			// performs the same cleanup as the normal reply path
+			// (handlePendingPermission) and then calls pending.resolve(),
+			// which is what actually unblocks <-pending.Resolved
+			// (sync.Once-guarded: whichever path -- a real user reply or
+			// this notify -- resolves first wins, the other is a no-op).
+			// No event draining, no new select case: the hot wait path is
+			// untouched (C1/C2).
+			var cancelExternal func()
+			if notifier, ok := state.agentSession.(ExternalResolutionNotifier); ok {
+				reqID := event.RequestID
+				toolName := event.ToolName
+				cancelExternal = notifier.OnExternalResolution(reqID, func(note string) {
+					// Idempotent guard (C3): only clear state.pending -- and
+					// only send a note -- if it is STILL this exact request.
+					// A real user reply may have already resolved it (or a
+					// later permission in the same turn may already have
+					// replaced it) by the time this fires; never clobber
+					// that, and never send a duplicate note.
+					state.mu.Lock()
+					stillPending := state.pending != nil && state.pending.RequestID == reqID
+					if stillPending {
+						state.pending = nil
+					}
+					state.mu.Unlock()
+					if stillPending {
+						// sp.unfreeze() is intentionally NOT called here: the
+						// single post-wait sp.unfreeze() below fires
+						// unconditionally once <-pending.Resolved returns,
+						// regardless of which path called pending.resolve()
+						// -- the same mechanism handlePendingPermission already
+						// relies on for the normal reply path.
+						note = e.i18n.ResolvePermissionNote(note)
+						if toolName != "" {
+							note = fmt.Sprintf("%s (%s)", note, toolName)
+						}
+						sendWorkspace(p, replyCtx, note)
+					}
+					// sync.Once-guarded; a no-op if a real user reply already
+					// resolved this exact request first.
+					pending.resolve()
+				})
+			}
+
 			// Stop idle timer while waiting for user permission response;
 			// the user may take a long time to decide, and we don't want
 			// the idle timeout to kill the session during that wait.
@@ -5658,6 +6018,17 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 
 			<-pending.Resolved
 			Tlog(ctx).Info("permission resolved", "request_id", event.RequestID)
+
+			// m1: deregister right here rather than via defer at function
+			// return. <-pending.Resolved above cannot return until this
+			// exact request is resolved (real reply, notify, or a forced
+			// resolve on session teardown), so a direct call immediately
+			// after is equally complete -- unlike defer, it does not hold
+			// the adapter's registration open for every already-resolved
+			// permission for the rest of the turn (a turn can carry dozens).
+			if cancelExternal != nil {
+				cancelExternal()
+			}
 
 			// The stream preview was frozen+detached when this permission
 			// request was emitted, so any subsequent EventText in this turn
@@ -5672,6 +6043,33 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 			if idleTimer != nil {
 				idleTimer.Reset(e.eventIdleTimeout)
 			}
+
+		case EventPermissionResolved:
+			// Defensive/observability case (C2/C3): the primary resolution
+			// signal is the ExternalResolutionNotifier callback registered
+			// above, which never touches this channel. Control can only
+			// reach here for a request that is NOT the live state.pending --
+			// while a permission is genuinely pending this goroutine is
+			// blocked on <-pending.Resolved, not reading events -- so this
+			// case only ever observes a redundant or out-of-order signal
+			// for an already-resolved request. Guarded the same way the
+			// notify closure is, so a notify+event double-fire for the same
+			// request is safe (idempotent, no duplicate note).
+			state.mu.Lock()
+			matched := state.pending
+			if matched != nil && matched.RequestID == event.RequestID {
+				state.pending = nil
+			} else {
+				matched = nil
+			}
+			state.mu.Unlock()
+			if matched == nil {
+				slog.Debug("EventPermissionResolved: no matching pending request, ignoring",
+					"session", sessionKey, "request_id", event.RequestID)
+				continue
+			}
+			sendWorkspace(p, replyCtx, e.i18n.ResolvePermissionNote(event.Content))
+			matched.resolve()
 
 		case EventResult:
 			// Non-terminal result events (e.g. mid-turn compaction: Claude
@@ -13215,8 +13613,14 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 
 	switch cmd {
 	case "/watch":
-		if strings.EqualFold(strings.TrimSpace(args), "stop") {
+		trimmedArgs := strings.TrimSpace(args)
+		switch {
+		case strings.EqualFold(trimmedArgs, "stop"):
 			e.stopWatch(sessionKey)
+		case strings.EqualFold(trimmedArgs, "bind-groups"):
+			if e.isAutoGroupEnabled() {
+				go e.autoGroupSweep()
+			}
 		}
 	case "/model":
 		if args == "" {

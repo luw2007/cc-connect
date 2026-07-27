@@ -167,3 +167,21 @@ func TestIsJapanese(t *testing.T) {
 		t.Error("ASCII 'a' should not be Japanese")
 	}
 }
+
+// TestI18n_ResolvePermissionNote is the M2 regression: the sentinel maps to
+// the translated feed-timeout message, empty maps to resolved-elsewhere,
+// and anything else (an adapter-composed, already user-facing string) is
+// returned unchanged.
+func TestI18n_ResolvePermissionNote(t *testing.T) {
+	i := NewI18n(LangEnglish)
+
+	if got, want := i.ResolvePermissionNote(PermissionNoteFallbackTimeout), i.T(MsgPermissionFeedFellBack); got != want {
+		t.Errorf("fallback timeout sentinel: got %q, want %q", got, want)
+	}
+	if got, want := i.ResolvePermissionNote(""), i.T(MsgPermissionResolvedElsewhere); got != want {
+		t.Errorf("empty note: got %q, want %q", got, want)
+	}
+	if got, want := i.ResolvePermissionNote("resolved via test authority"), "resolved via test authority"; got != want {
+		t.Errorf("arbitrary note: got %q, want %q (rendered as-is)", got, want)
+	}
+}

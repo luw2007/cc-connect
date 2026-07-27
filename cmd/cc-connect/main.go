@@ -556,6 +556,21 @@ func main() {
 			slog.Info("multi-workspace mode enabled", "project", proj.Name, "base_dir", baseDir)
 		}
 
+		// Wire per-workspace auto-groups (one chat group per external
+		// workspace/session). Independent of multi-workspace mode above --
+		// see core.Engine.SetAutoGroupWorkspaces.
+		if proj.AutoGroupWorkspaces != nil && *proj.AutoGroupWorkspaces {
+			autoGroupIntervalMs := 15000
+			if proj.AutoGroupIntervalMs != nil {
+				autoGroupIntervalMs = *proj.AutoGroupIntervalMs
+			}
+			// m5: no floor here -- core.Engine.SetAutoGroupWorkspaces clamps
+			// to its own minAutoGroupInterval, which is the single
+			// authoritative (and tested) place to change the floor.
+			engine.SetAutoGroupWorkspaces(true, time.Duration(autoGroupIntervalMs)*time.Millisecond)
+			slog.Info("auto-group-workspaces enabled", "project", proj.Name, "configured_interval_ms", autoGroupIntervalMs)
+		}
+
 		// Wire terminal observation (--observe / [projects.observe])
 		observeEnabled := rootOpts.observe
 		obsChan := rootOpts.observeChannel

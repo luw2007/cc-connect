@@ -46,6 +46,19 @@ type WorkspaceBinding struct {
 	ChannelName string   `json:"channel_name"`
 	Workspace   string   `json:"workspace"`
 	BoundAt     FlexTime `json:"bound_at"`
+	// AgentSessionID, when set, is the external agent session ID this
+	// binding was created for. Used by SetAutoGroupWorkspaces to dedup on
+	// session identity rather than Workspace: two external workspaces can
+	// share the same cwd (e.g. worktrees, parallel agents on one repo) and
+	// must not collide into a single group.
+	AgentSessionID string `json:"agent_session_id,omitempty"`
+	// Activated marks that the auto-group sequence (CreateGroupChat, Bind,
+	// SwitchToAgentSession, ReconstructReplyCtx, announce) fully completed
+	// for this binding. A binding can exist with Activated=false when
+	// CreateGroupChat succeeded but a later step failed -- the chat is
+	// already recorded (never a duplicate group on retry) and the next
+	// sweep retries only the remaining steps.
+	Activated bool `json:"activated,omitempty"`
 }
 
 // WorkspaceBindingManager persists channel->workspace mappings.
@@ -101,6 +114,13 @@ func (m *WorkspaceBindingManager) lookupLocked(projectKey, channelKey string) *W
 }
 
 func (m *WorkspaceBindingManager) Bind(projectKey, channelKey, channelName, workspace string) {
+	m.BindSession(projectKey, channelKey, channelName, workspace, "")
+}
+
+// BindSession is Bind plus an AgentSessionID recorded on the binding, for
+// callers that need to dedup by external session identity (SetAutoGroupWorkspaces)
+// rather than by workspace path.
+func (m *WorkspaceBindingManager) BindSession(projectKey, channelKey, channelName, workspace, agentSessionID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.refreshLocked()
@@ -108,9 +128,10 @@ func (m *WorkspaceBindingManager) Bind(projectKey, channelKey, channelName, work
 		m.bindings[projectKey] = make(map[string]*WorkspaceBinding)
 	}
 	m.bindings[projectKey][channelKey] = &WorkspaceBinding{
-		ChannelName: channelName,
-		Workspace:   workspace,
-		BoundAt:     FlexTime{time.Now()},
+		ChannelName:    channelName,
+		Workspace:      workspace,
+		BoundAt:        FlexTime{time.Now()},
+		AgentSessionID: agentSessionID,
 	}
 	m.saveLocked()
 }
@@ -147,6 +168,44 @@ func (m *WorkspaceBindingManager) MigrateChannelKey(projectKey, oldChannelKey, n
 	proj[newChannelKey] = &inherited
 	m.saveLocked()
 	return true
+
+// LookupBySessionID returns the channel key and binding already associated
+// with agentSessionID within projectKey (C4: dedup on external session
+// identity, not workspace path -- two workspaces on the same repo path are
+// distinct sessions and must not collide). The returned binding is a COPY
+// (B2): the manager's internal *WorkspaceBinding can be mutated by
+// MarkActivated or replaced wholesale by refreshLocked (an external file
+// change) while a caller holds a pointer read outside this lock, so callers
+// must never receive the live one.
+func (m *WorkspaceBindingManager) LookupBySessionID(projectKey, agentSessionID string) (channelKey string, binding *WorkspaceBinding, found bool) {
+	if agentSessionID == "" {
+		return "", nil, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshLocked()
+	for ck, b := range m.bindings[projectKey] {
+		if b.AgentSessionID == agentSessionID {
+			b2 := *b
+			return ck, &b2, true
+		}
+	}
+	return "", nil, false
+}
+
+// MarkActivated flags an existing binding as fully activated (switched +
+// announced), so a repeating sweep does not resend the announcement on
+// every tick after a successful bind. No-op if the binding is missing.
+func (m *WorkspaceBindingManager) MarkActivated(projectKey, channelKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshLocked()
+	if proj := m.bindings[projectKey]; proj != nil {
+		if b := proj[channelKey]; b != nil {
+			b.Activated = true
+			m.saveLocked()
+		}
+	}
 }
 
 func (m *WorkspaceBindingManager) Unbind(projectKey, channelKey string) {

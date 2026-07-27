@@ -588,6 +588,17 @@ type ProjectConfig struct {
 	// Default is false (show all sessions).
 	FilterExternalSessions *bool        `toml:"filter_external_sessions,omitempty"`
 	Notes                  *NotesConfig `toml:"notes,omitempty"`
+	// AutoGroupWorkspaces: when true, periodically diff the agent's
+	// ListSessions() and auto-create+bind a chat group for every newly
+	// discovered external workspace/session (one group per workspace).
+	// Requires a platform that implements GroupChatCreator; requires the
+	// project's workspace binding store to already exist (multi-workspace
+	// mode or equivalent wiring). Default is false.
+	AutoGroupWorkspaces *bool `toml:"auto_group_workspaces,omitempty"`
+	// AutoGroupIntervalMs is the sweep interval for AutoGroupWorkspaces, in
+	// milliseconds. Default 15000 (15s); clamped to a minimum of 5000 (5s)
+	// so a too-small value cannot busy-loop the sweep.
+	AutoGroupIntervalMs *int `toml:"auto_group_interval_ms,omitempty"`
 	// Shell overrides the global shell for this project. See Config.Shell.
 	Shell string `toml:"shell,omitempty"`
 	// ShellProfile overrides the global shell_profile for this project.

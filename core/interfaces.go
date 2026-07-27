@@ -576,6 +576,29 @@ type AgentSessionCanceller interface {
 	CancelTurn() error
 }
 
+// ExternalResolutionNotifier is an optional AgentSession capability for
+// backends where a pending permission request can be decided outside
+// cc-connect entirely (another client answered it, or the backend's own
+// prompt/timeout resolved it directly) -- e.g. a click in another UI, or a
+// hook-level timeout that falls back to the backend's native prompt.
+//
+// OnExternalResolution registers notify for requestID. The session invokes
+// notify(note) at most once, only if requestID is decided outside
+// cc-connect; note is a short human-readable string (may be empty). The
+// returned cancel function deregisters the callback; it is idempotent and
+// never nil, and must be safe to call even after notify has already fired
+// or the request was never resolved. Implementations must not call notify
+// after cancel has returned.
+//
+// This lets the engine keep blocking on its existing synchronous
+// resolution channel (no event-channel draining, no new select cases in
+// the hot wait path) while still reacting to out-of-band resolutions: the
+// registered notify closure performs the same state cleanup as the normal
+// resolution path and then resolves the same blocking primitive.
+type ExternalResolutionNotifier interface {
+	OnExternalResolution(requestID string, notify func(note string)) (cancel func())
+}
+
 // CommandProvider is an optional interface for agents that expose custom slash
 // commands via local files (e.g. .claude/commands/*.md). The engine scans the
 // returned directories for *.md files and registers them as slash commands.

@@ -456,7 +456,32 @@ const (
 	EventError             EventType = "error"              // error occurred
 	EventPermissionRequest EventType = "permission_request" // agent requests permission via stdio protocol
 	EventThinking          EventType = "thinking"           // thinking/processing status
+	// EventPermissionResolved signals that a pending EventPermissionRequest's
+	// RequestID was decided WITHOUT going through this session's
+	// RespondPermission call (e.g. another client answered it, or the
+	// backend's own prompt/timeout resolved it directly). Content, if set,
+	// is a short human-readable note the engine may display -- see
+	// PermissionNoteFallbackTimeout below for the note's exact contract;
+	// RequestID MUST match the original request. The engine's interactive
+	// (foreground) event loop special-cases this event as a defensive/
+	// observability backstop (see ExternalResolutionNotifier in
+	// interfaces.go for the callback path that actually unblocks an
+	// in-progress wait -- this event is not required for that). The
+	// background/unsolicited reader loop does NOT special-case it: an
+	// adapter driving a background session must resolve via
+	// OnExternalResolution, not by emitting this event on Events().
+	EventPermissionResolved EventType = "permission_resolved"
 )
+
+// PermissionNoteFallbackTimeout is the sentinel note value adapters pass to
+// ExternalResolutionNotifier's notify(note) (or set as EventPermissionResolved's
+// Content) when a pending permission's external deadline expired here and the
+// backend fell back to resolving it directly (e.g. its own native prompt or
+// timeout). The engine's note-rendering paths map exactly this value to the
+// translated MsgPermissionFeedFellBack message; an empty note maps to
+// MsgPermissionResolvedElsewhere; any other value is rendered as-is (already
+// a complete user-facing string) -- see I18n.ResolvePermissionNote.
+const PermissionNoteFallbackTimeout = "permission_fallback_timeout"
 
 // UserQuestion represents a structured question from AskUserQuestion.
 type UserQuestion struct {

@@ -223,61 +223,68 @@ const (
 	MsgPermissionApproveAll      MsgKey = "permission_approve_all"
 	MsgPermissionDenied          MsgKey = "permission_denied_msg"
 	MsgPermissionHint            MsgKey = "permission_hint"
-	MsgQuietOn                   MsgKey = "quiet_on"
-	MsgQuietOff                  MsgKey = "quiet_off"
-	MsgDisplayModeCompact        MsgKey = "display_mode_compact"
-	MsgQuietGlobalOn             MsgKey = "quiet_global_on"
-	MsgQuietGlobalOff            MsgKey = "quiet_global_off"
-	MsgModeChanged               MsgKey = "mode_changed"
-	MsgModeNotSupported          MsgKey = "mode_not_supported"
-	MsgSessionRestarting         MsgKey = "session_restarting"
-	MsgSessionNotStarted         MsgKey = "session_not_started"
-	MsgUntitled                  MsgKey = "untitled"
-	MsgLangChanged               MsgKey = "lang_changed"
-	MsgLangInvalid               MsgKey = "lang_invalid"
-	MsgLangCurrent               MsgKey = "lang_current"
-	MsgUnknownCommand            MsgKey = "unknown_command"
-	MsgWelcome                   MsgKey = "welcome"
-	MsgHelp                      MsgKey = "message_help" // change from "help", which is used now for builtin command help
-	MsgHelpTitle                 MsgKey = "help_title"
-	MsgHelpSessionSection        MsgKey = "help_session_section"
-	MsgHelpAgentSection          MsgKey = "help_agent_section"
-	MsgHelpToolsSection          MsgKey = "help_tools_section"
-	MsgHelpInteractionSection    MsgKey = "help_interaction_section"
-	MsgHelpSystemSection         MsgKey = "help_system_section"
-	MsgHelpTip                   MsgKey = "help_tip"
-	MsgListTitle                 MsgKey = "list_title"
-	MsgListTitlePaged            MsgKey = "list_title_paged"
-	MsgListEmpty                 MsgKey = "list_empty"
-	MsgListMore                  MsgKey = "list_more"
-	MsgListPageHint              MsgKey = "list_page_hint"
-	MsgListSwitchHint            MsgKey = "list_switch_hint"
-	MsgListError                 MsgKey = "list_error"
-	MsgHistoryEmpty              MsgKey = "history_empty"
-	MsgNameUsage                 MsgKey = "name_usage"
-	MsgNameSet                   MsgKey = "name_set"
-	MsgNameNoSession             MsgKey = "name_no_session"
-	MsgProviderNotSupported      MsgKey = "provider_not_supported"
-	MsgProviderNone              MsgKey = "provider_none"
-	MsgProviderCurrent           MsgKey = "provider_current"
-	MsgProviderListTitle         MsgKey = "provider_list_title"
-	MsgProviderListEmpty         MsgKey = "provider_list_empty"
-	MsgProviderSwitchHint        MsgKey = "provider_switch_hint"
-	MsgProviderNotFound          MsgKey = "provider_not_found"
-	MsgProviderSwitched          MsgKey = "provider_switched"
-	MsgProviderCleared           MsgKey = "provider_cleared"
-	MsgProviderAdded             MsgKey = "provider_added"
-	MsgProviderAddUsage          MsgKey = "provider_add_usage"
-	MsgProviderAddFailed         MsgKey = "provider_add_failed"
-	MsgProviderRemoved           MsgKey = "provider_removed"
-	MsgProviderRemoveFailed      MsgKey = "provider_remove_failed"
-	MsgCardTitleProviderAdd      MsgKey = "card_title_provider_add"
-	MsgProviderAddPickHint       MsgKey = "provider_add_pick_hint"
-	MsgProviderAddOther          MsgKey = "provider_add_other"
-	MsgProviderAddApiKeyPrompt   MsgKey = "provider_add_api_key_prompt"
-	MsgProviderAddInviteHint     MsgKey = "provider_add_invite_hint"
-	MsgProviderLinkGlobal        MsgKey = "provider_link_global"
-	MsgProviderLinked            MsgKey = "provider_linked"
+	// MsgPermissionResolvedElsewhere: shown when a pending permission request
+	// was decided outside cc-connect (ExternalResolutionNotifier / EventPermissionResolved).
+	MsgPermissionResolvedElsewhere MsgKey = "permission_resolved_elsewhere"
+	// MsgPermissionFeedFellBack: shown when a pending permission's external
+	// deadline expired before anyone answered it here, so the backend fell
+	// back to resolving it directly (e.g. its own native prompt/timeout).
+	MsgPermissionFeedFellBack  MsgKey = "permission_feed_fell_back"
+	MsgQuietOn                 MsgKey = "quiet_on"
+	MsgQuietOff                MsgKey = "quiet_off"
+	MsgDisplayModeCompact      MsgKey = "display_mode_compact"
+	MsgQuietGlobalOn           MsgKey = "quiet_global_on"
+	MsgQuietGlobalOff          MsgKey = "quiet_global_off"
+	MsgModeChanged             MsgKey = "mode_changed"
+	MsgModeNotSupported        MsgKey = "mode_not_supported"
+	MsgSessionRestarting       MsgKey = "session_restarting"
+	MsgSessionNotStarted       MsgKey = "session_not_started"
+	MsgUntitled                MsgKey = "untitled"
+	MsgLangChanged             MsgKey = "lang_changed"
+	MsgLangInvalid             MsgKey = "lang_invalid"
+	MsgLangCurrent             MsgKey = "lang_current"
+	MsgUnknownCommand          MsgKey = "unknown_command"
+	MsgWelcome                 MsgKey = "welcome"
+	MsgHelp                    MsgKey = "message_help" // change from "help", which is used now for builtin command help
+	MsgHelpTitle               MsgKey = "help_title"
+	MsgHelpSessionSection      MsgKey = "help_session_section"
+	MsgHelpAgentSection        MsgKey = "help_agent_section"
+	MsgHelpToolsSection        MsgKey = "help_tools_section"
+	MsgHelpInteractionSection  MsgKey = "help_interaction_section"
+	MsgHelpSystemSection       MsgKey = "help_system_section"
+	MsgHelpTip                 MsgKey = "help_tip"
+	MsgListTitle               MsgKey = "list_title"
+	MsgListTitlePaged          MsgKey = "list_title_paged"
+	MsgListEmpty               MsgKey = "list_empty"
+	MsgListMore                MsgKey = "list_more"
+	MsgListPageHint            MsgKey = "list_page_hint"
+	MsgListSwitchHint          MsgKey = "list_switch_hint"
+	MsgListError               MsgKey = "list_error"
+	MsgHistoryEmpty            MsgKey = "history_empty"
+	MsgNameUsage               MsgKey = "name_usage"
+	MsgNameSet                 MsgKey = "name_set"
+	MsgNameNoSession           MsgKey = "name_no_session"
+	MsgProviderNotSupported    MsgKey = "provider_not_supported"
+	MsgProviderNone            MsgKey = "provider_none"
+	MsgProviderCurrent         MsgKey = "provider_current"
+	MsgProviderListTitle       MsgKey = "provider_list_title"
+	MsgProviderListEmpty       MsgKey = "provider_list_empty"
+	MsgProviderSwitchHint      MsgKey = "provider_switch_hint"
+	MsgProviderNotFound        MsgKey = "provider_not_found"
+	MsgProviderSwitched        MsgKey = "provider_switched"
+	MsgProviderCleared         MsgKey = "provider_cleared"
+	MsgProviderAdded           MsgKey = "provider_added"
+	MsgProviderAddUsage        MsgKey = "provider_add_usage"
+	MsgProviderAddFailed       MsgKey = "provider_add_failed"
+	MsgProviderRemoved         MsgKey = "provider_removed"
+	MsgProviderRemoveFailed    MsgKey = "provider_remove_failed"
+	MsgCardTitleProviderAdd    MsgKey = "card_title_provider_add"
+	MsgProviderAddPickHint     MsgKey = "provider_add_pick_hint"
+	MsgProviderAddOther        MsgKey = "provider_add_other"
+	MsgProviderAddApiKeyPrompt MsgKey = "provider_add_api_key_prompt"
+	MsgProviderAddInviteHint   MsgKey = "provider_add_invite_hint"
+	MsgProviderLinkGlobal      MsgKey = "provider_link_global"
+	MsgProviderLinked          MsgKey = "provider_linked"
 
 	MsgVoiceNotEnabled               MsgKey = "voice_not_enabled"
 	MsgVoiceUsingPlatformRecognition MsgKey = "voice_using_platform_recognition"
@@ -415,31 +422,31 @@ const (
 	MsgCronIDLabel               MsgKey = "cron_id_label"
 	MsgCronFailedSuffix          MsgKey = "cron_failed_suffix"
 
-	MsgTimerNotAvailable  MsgKey = "timer_not_available"
-	MsgTimerUsage         MsgKey = "timer_usage"
-	MsgTimerAddUsage      MsgKey = "timer_add_usage"
-	MsgTimerAdded         MsgKey = "timer_added"
-	MsgTimerAddedExec     MsgKey = "timer_added_exec"
-	MsgTimerAddExecUsage  MsgKey = "timer_addexec_usage"
-	MsgTimerEmpty         MsgKey = "timer_empty"
-	MsgTimerListTitle     MsgKey = "timer_list_title"
-	MsgTimerListFooter    MsgKey = "timer_list_footer"
-	MsgTimerDelUsage      MsgKey = "timer_del_usage"
-	MsgTimerMuteUsage     MsgKey = "timer_mute_usage"
-	MsgTimerDeleted       MsgKey = "timer_deleted"
-	MsgTimerNotFound      MsgKey = "timer_not_found"
-	MsgTimerMuted         MsgKey = "timer_muted"
-	MsgTimerUnmuted       MsgKey = "timer_unmuted"
-	MsgTimerCardHint      MsgKey = "timer_card_hint"
-	MsgTimerBtnMute       MsgKey = "timer_btn_mute"
-	MsgTimerBtnUnmute     MsgKey = "timer_btn_unmute"
-	MsgTimerBtnDelete     MsgKey = "timer_btn_delete"
-	MsgTimerIDLabel       MsgKey = "timer_id_label"
-	MsgTimerScheduledLabel MsgKey = "timer_scheduled_label"
-	MsgTimerFailedSuffix  MsgKey = "timer_failed_suffix"
-	MsgCommandsTagAgent          MsgKey = "commands_tag_agent"
-	MsgCommandsTagShell          MsgKey = "commands_tag_shell"
-	MsgUpgradeTimeoutSuffix      MsgKey = "upgrade_timeout_suffix"
+	MsgTimerNotAvailable    MsgKey = "timer_not_available"
+	MsgTimerUsage           MsgKey = "timer_usage"
+	MsgTimerAddUsage        MsgKey = "timer_add_usage"
+	MsgTimerAdded           MsgKey = "timer_added"
+	MsgTimerAddedExec       MsgKey = "timer_added_exec"
+	MsgTimerAddExecUsage    MsgKey = "timer_addexec_usage"
+	MsgTimerEmpty           MsgKey = "timer_empty"
+	MsgTimerListTitle       MsgKey = "timer_list_title"
+	MsgTimerListFooter      MsgKey = "timer_list_footer"
+	MsgTimerDelUsage        MsgKey = "timer_del_usage"
+	MsgTimerMuteUsage       MsgKey = "timer_mute_usage"
+	MsgTimerDeleted         MsgKey = "timer_deleted"
+	MsgTimerNotFound        MsgKey = "timer_not_found"
+	MsgTimerMuted           MsgKey = "timer_muted"
+	MsgTimerUnmuted         MsgKey = "timer_unmuted"
+	MsgTimerCardHint        MsgKey = "timer_card_hint"
+	MsgTimerBtnMute         MsgKey = "timer_btn_mute"
+	MsgTimerBtnUnmute       MsgKey = "timer_btn_unmute"
+	MsgTimerBtnDelete       MsgKey = "timer_btn_delete"
+	MsgTimerIDLabel         MsgKey = "timer_id_label"
+	MsgTimerScheduledLabel  MsgKey = "timer_scheduled_label"
+	MsgTimerFailedSuffix    MsgKey = "timer_failed_suffix"
+	MsgCommandsTagAgent     MsgKey = "commands_tag_agent"
+	MsgCommandsTagShell     MsgKey = "commands_tag_shell"
+	MsgUpgradeTimeoutSuffix MsgKey = "upgrade_timeout_suffix"
 
 	MsgCronScheduleLabel MsgKey = "cron_schedule_label"
 	MsgCronNextRunLabel  MsgKey = "cron_next_run_label"
@@ -676,6 +683,11 @@ const (
 	// Group chat creation
 	MsgGroupCreateBtn MsgKey = "group_create_btn"
 	MsgGroupCreated   MsgKey = "group_created"
+	// MsgAutoGroupCreated: announced in a group chat that SetAutoGroupWorkspaces
+	// auto-created and bound to a newly discovered external workspace (distinct
+	// wording from MsgGroupCreated, which is the user-triggered /session-group
+	// and /dir-group confirmation).
+	MsgAutoGroupCreated MsgKey = "auto_group_created"
 
 	// Attach/Clear
 	MsgAttachUsage   MsgKey = "attach_usage"
@@ -691,6 +703,9 @@ const (
 	MsgGroupsEmpty      MsgKey = "groups_empty"
 	MsgGroupDissolved   MsgKey = "group_dissolved"
 	MsgGroupDissolveBtn MsgKey = "group_dissolve_btn"
+
+	// Watch card: bind-groups button (auto-group on-demand sweep)
+	MsgWatchBindBtn     MsgKey = "watch_bind_btn"
 	MsgGroupDissolveErr MsgKey = "group_dissolve_err"
 
 	// Directory browser
@@ -1122,6 +1137,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "⚠️ 等待權限回應。請回覆 **允許** / **拒絕** / **允許所有**。",
 		LangJapanese:           "⚠️ 権限の応答を待っています。**allow** / **deny** / **allow all** で返信してください。",
 		LangSpanish:            "⚠️ Esperando respuesta de permiso. Responda **allow** / **deny** / **allow all**.",
+	},
+	MsgPermissionResolvedElsewhere: {
+		LangEnglish:            "This request was resolved elsewhere.",
+		LangChinese:            "该请求已在别处被处理。",
+		LangTraditionalChinese: "該請求已在別處被處理。",
+		LangJapanese:           "このリクエストは他の場所で解決されました。",
+		LangSpanish:            "Esta solicitud se resolvió en otro lugar.",
+	},
+	MsgPermissionFeedFellBack: {
+		LangEnglish:            "This request timed out here and was handled directly in the terminal.",
+		LangChinese:            "该请求在此处超时，已直接在终端中处理。",
+		LangTraditionalChinese: "該請求在此處逾時，已直接在終端中處理。",
+		LangJapanese:           "このリクエストはここでタイムアウトし、ターミナルで直接処理されました。",
+		LangSpanish:            "Esta solicitud expiró aquí y se gestionó directamente en la terminal.",
 	},
 	MsgQuietOn: {
 		LangEnglish:            "🔇 Quiet mode ON — thinking and tool progress messages will be hidden.",
@@ -4498,6 +4527,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "グループチャット作成: %s",
 		LangSpanish:            "Chat grupal creado: %s",
 	},
+	MsgAutoGroupCreated: {
+		LangEnglish:            "Auto-bound workspace group: %s",
+		LangChinese:            "已自动绑定工作区群聊: %s",
+		LangTraditionalChinese: "已自動綁定工作區群聊: %s",
+		LangJapanese:           "ワークスペースグループを自動バインド: %s",
+		LangSpanish:            "Grupo de espacio de trabajo vinculado automáticamente: %s",
+	},
 	MsgAttachUsage: {
 		LangEnglish:            "Usage: /attach <number | id_prefix | name>",
 		LangChinese:            "用法: /attach <序号 | ID前缀 | 名称>",
@@ -4560,6 +4596,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "解散",
 		LangJapanese:           "解散",
 		LangSpanish:            "Disolver",
+	},
+	MsgWatchBindBtn: {
+		LangEnglish:            "🔗 Bind unbound groups",
+		LangChinese:            "🔗 绑定未绑定群聊",
+		LangTraditionalChinese: "🔗 綁定未綁定群聊",
+		LangJapanese:           "🔗 未バインドグループをバインド",
+		LangSpanish:            "🔗 Vincular grupos no vinculados",
 	},
 	MsgGroupDissolveErr: {
 		LangEnglish:            "Failed to dissolve group: %s",
@@ -5307,4 +5350,21 @@ func (i *I18n) T(key MsgKey) string {
 func (i *I18n) Tf(key MsgKey, args ...interface{}) string {
 	template := i.T(key)
 	return fmt.Sprintf(template, args...)
+}
+
+// ResolvePermissionNote renders a permission-resolution note (from
+// ExternalResolutionNotifier's notify(note) or EventPermissionResolved.Content)
+// for display: PermissionNoteFallbackTimeout maps to the translated
+// feed-timeout message, an empty note maps to the translated
+// resolved-elsewhere message, and any other value is already a complete
+// user-facing string and is returned as-is.
+func (i *I18n) ResolvePermissionNote(note string) string {
+	switch note {
+	case PermissionNoteFallbackTimeout:
+		return i.T(MsgPermissionFeedFellBack)
+	case "":
+		return i.T(MsgPermissionResolvedElsewhere)
+	default:
+		return note
+	}
 }
