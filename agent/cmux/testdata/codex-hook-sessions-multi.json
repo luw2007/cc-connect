@@ -1,0 +1,23 @@
+{
+  "activeSessionsBySurface": {},
+  "activeSessionsByWorkspace": {},
+  "sessions": {
+    "session-01": {"sessionId":"session-01","surfaceId":"SURFACE-OLD-A","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"running","updatedAt":1001},
+    "session-02": {"sessionId":"session-02","surfaceId":"SURFACE-OLD-B","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"idle","updatedAt":1002},
+    "session-03": {"sessionId":"session-03","surfaceId":"SURFACE-OLD-A","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"running","updatedAt":1003},
+    "session-04": {"sessionId":"session-04","surfaceId":"SURFACE-OLD-B","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"idle","updatedAt":1004},
+    "session-05": {"sessionId":"session-05","surfaceId":"SURFACE-OLD-A","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"running","updatedAt":1005},
+    "session-06": {"sessionId":"session-06","surfaceId":"SURFACE-OLD-B","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"idle","updatedAt":1006},
+    "session-07": {"sessionId":"session-07","surfaceId":"SURFACE-OLD-A","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"running","updatedAt":1007},
+    "session-08": {"sessionId":"session-08","surfaceId":"SURFACE-OLD-B","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"idle","updatedAt":1008},
+    "session-09": {"sessionId":"session-09","surfaceId":"SURFACE-OLD-A","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"running","updatedAt":1009},
+    "session-10": {"sessionId":"session-10","surfaceId":"SURFACE-OLD-B","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"idle","updatedAt":1010},
+    "session-11": {"sessionId":"session-11","surfaceId":"SURFACE-OLD-A","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"running","updatedAt":1011},
+    "session-12": {"sessionId":"session-12","surfaceId":"SURFACE-OLD-B","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"idle","updatedAt":1012},
+    "session-13": {"sessionId":"session-13","surfaceId":"SURFACE-OLD-A","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"running","updatedAt":1013},
+    "session-14": {"sessionId":"session-14","surfaceId":"SURFACE-OLD-B","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"idle","updatedAt":1014},
+    "session-15": {"sessionId":"session-15","surfaceId":"SURFACE-OLD-A","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"running","updatedAt":1015},
+    "session-16": {"sessionId":"session-16","surfaceId":"SURFACE-OLD-B","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"idle","updatedAt":1016},
+    "session-17": {"sessionId":"session-17","surfaceId":"SURFACE-NEWEST","workspaceId":"WORKSPACE-MULTI","agentLifecycle":"needsInput","updatedAt":1017}
+  }
+}
