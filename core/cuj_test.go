@@ -114,6 +114,64 @@ func (a *cujAgent) ListSessions(_ context.Context) ([]AgentSessionInfo, error) {
 }
 func (a *cujAgent) Stop() error { return nil }
 
+// cujManualGroupAgent exposes one native session for group creation and keeps
+// the resumed ID stable, matching a real agent adapter's resume behavior.
+type cujManualGroupAgent struct {
+	*cujAgent
+	listedSessions []AgentSessionInfo
+
+	startMu    sync.Mutex
+	startedIDs []string
+	freshCount int
+}
+
+func (a *cujManualGroupAgent) StartSession(ctx context.Context, sessionID string) (AgentSession, error) {
+	started, err := a.cujAgent.StartSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	base := started.(*cujAgentSession)
+
+	a.startMu.Lock()
+	a.startedIDs = append(a.startedIDs, sessionID)
+	currentID := sessionID
+	if currentID == "" {
+		a.freshCount++
+		currentID = fmt.Sprintf("cuj-fresh-session-%d", a.freshCount)
+	}
+	a.startMu.Unlock()
+
+	return &cujManualGroupAgentSession{cujAgentSession: base, currentID: currentID}, nil
+}
+
+func (a *cujManualGroupAgent) ListSessions(context.Context) ([]AgentSessionInfo, error) {
+	return append([]AgentSessionInfo(nil), a.listedSessions...), nil
+}
+
+func (a *cujManualGroupAgent) startedSessionIDs() []string {
+	a.startMu.Lock()
+	defer a.startMu.Unlock()
+	return append([]string(nil), a.startedIDs...)
+}
+
+type cujManualGroupAgentSession struct {
+	*cujAgentSession
+	currentID string
+}
+
+func (s *cujManualGroupAgentSession) CurrentSessionID() string { return s.currentID }
+
+type cujManualGroupPlatform struct {
+	*stubPlatformEngine
+	chatID      string
+	createCalls int
+}
+
+func (p *cujManualGroupPlatform) CreateGroupChat(context.Context, string, string, string) (string, error) {
+	p.createCalls++
+	return p.chatID, nil
+}
+
 // cujAgentSession is an AgentSession whose reply is controllable per-Send.
 // Tests can set reply (and optionally toolEvent) before each Send to drive
 // scenarios like "agent calls tool", "agent returns error", "agent succeeds".
@@ -2020,6 +2078,126 @@ func TestCUJ_H1_MultiProjectLinkedToIntegration(t *testing.T) {
 // behavior). Covered at integration level.
 func TestCUJ_H3_SharedSessionLinkedToIntegration(t *testing.T) {
 	t.Log("CUJ-H3: covered by release-gate TestCC_SESSION_01_share_session")
+}
+
+// CUJ-H4 · A group created for a native agent session routes ordinary group
+// messages to that session, remains stable across turns, and respects a later
+// explicit /new selection instead of reapplying the original binding.
+func TestCUJ_H4_ManualGroupRoutesToBoundAgentSession(t *testing.T) {
+	const boundSessionID = "native-session-1"
+	dir := t.TempDir()
+	platform := &cujManualGroupPlatform{
+		stubPlatformEngine: &stubPlatformEngine{n: "feishu"},
+		chatID:             "chat-1",
+	}
+	agent := &cujManualGroupAgent{
+		cujAgent: &cujAgent{},
+		listedSessions: []AgentSessionInfo{{
+			ID:          boundSessionID,
+			Summary:     "Existing native conversation",
+			ProjectPath: "/repo",
+		}},
+	}
+	e := NewEngine("project-a", agent, []Platform{platform}, dir+"/sessions.json", LangEnglish)
+	e.SetDataDir(dir)
+
+	// Action 1: the user creates a dedicated group for the native session.
+	created, err := e.CreateAgentSessionGroup(context.Background(), boundSessionID, "owner-1", "Manual Session Group")
+	if err != nil {
+		t.Fatalf("CreateAgentSessionGroup() error = %v", err)
+	}
+	if !created.Created || created.ChatID != "chat-1" || platform.createCalls != 1 {
+		t.Fatalf("group result/calls = %#v/%d, want created chat-1/1", created, platform.createCalls)
+	}
+
+	const sessionKey = "feishu:chat-1:user-1"
+	sendAndWait := func(targetSessionKey, userID, messageID, content string) {
+		t.Helper()
+		before := len(platform.getSent())
+		e.ReceiveMessage(platform, &Message{
+			SessionKey: targetSessionKey,
+			Platform:   "feishu",
+			MessageID:  messageID,
+			UserID:     userID,
+			UserName:   userID,
+			ChatName:   "Manual Session Group",
+			Content:    content,
+			ReplyCtx:   "ctx-" + messageID,
+		})
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if len(platform.getSent()) > before {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for reply to %q; sent=%v", content, platform.getSent())
+	}
+
+	// Action 2: the first real Feishu group key attaches to the binding.
+	sendAndWait(sessionKey, "user-1", "manual-1", "continue the existing work")
+	attached := e.sessions.GetActive(sessionKey)
+	if attached == nil || attached.GetAgentSessionID() != boundSessionID {
+		t.Fatalf("attached session = %#v, agent ID = %q, want %q", attached, func() string {
+			if attached == nil {
+				return ""
+			}
+			return attached.GetAgentSessionID()
+		}(), boundSessionID)
+	}
+	attachedCCSessionID := attached.ID
+	if got := agent.startedSessionIDs(); len(got) != 1 || got[0] != boundSessionID {
+		t.Fatalf("StartSession IDs = %v, want [%s]", got, boundSessionID)
+	}
+
+	// Action 3: a second user in the same chat must get a fresh native session;
+	// first-key-wins prevents two independently locked keys resuming one session.
+	const secondSessionKey = "feishu:chat-1:user-2"
+	sendAndWait(secondSessionKey, "user-2", "manual-other-user", "work on a separate request")
+	second := e.sessions.GetActive(secondSessionKey)
+	if second == nil || second.GetAgentSessionID() == "" || second.GetAgentSessionID() == boundSessionID {
+		t.Fatalf("second-user active session = %#v, agent ID = %q, want fresh non-bound session", second, func() string {
+			if second == nil {
+				return ""
+			}
+			return second.GetAgentSessionID()
+		}())
+	}
+	if active := e.sessions.GetActive(sessionKey); active == nil || active.ID != attachedCCSessionID || active.GetAgentSessionID() != boundSessionID {
+		t.Fatalf("first-user session after second user = %#v, want cc=%q agent=%q", active, attachedCCSessionID, boundSessionID)
+	}
+	if got := agent.startedSessionIDs(); len(got) != 2 || got[0] != boundSessionID || got[1] != "" {
+		t.Fatalf("StartSession IDs after second user = %v, want [%s <fresh>]", got, boundSessionID)
+	}
+
+	// Action 4: another message is idempotent: no extra internal or agent session.
+	sendAndWait(sessionKey, "user-1", "manual-2", "second turn in the same conversation")
+	if active := e.sessions.GetActive(sessionKey); active == nil || active.ID != attachedCCSessionID || active.GetAgentSessionID() != boundSessionID {
+		t.Fatalf("second-turn active session = %#v, want cc=%q agent=%q", active, attachedCCSessionID, boundSessionID)
+	}
+	if got := len(e.sessions.ListSessions(sessionKey)); got != 1 {
+		t.Fatalf("internal session count after second turn = %d, want 1", got)
+	}
+	if got := agent.startedSessionIDs(); len(got) != 2 {
+		t.Fatalf("StartSession calls after second turn = %v, want two calls", got)
+	}
+
+	// Actions 5 and 6: /new becomes authoritative; the following message must
+	// stay on the new session instead of being pulled back to the group binding.
+	sendAndWait(sessionKey, "user-1", "manual-new", "/new")
+	newSession := e.sessions.GetActive(sessionKey)
+	if newSession == nil || newSession.ID == attachedCCSessionID {
+		t.Fatalf("/new active session = %#v, want a different internal session", newSession)
+	}
+	newCCSessionID := newSession.ID
+	sendAndWait(sessionKey, "user-1", "manual-3", "start fresh here")
+	active := e.sessions.GetActive(sessionKey)
+	if active == nil || active.ID != newCCSessionID {
+		t.Fatalf("post-/new active session = %#v, want internal session %q", active, newCCSessionID)
+	}
+	if got := active.GetAgentSessionID(); got == boundSessionID {
+		t.Fatalf("post-/new agent session ID = %q, must not revert to manual binding", got)
+	}
 }
 
 // ===========================================================================

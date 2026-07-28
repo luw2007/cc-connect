@@ -2936,6 +2936,62 @@ func (e *Engine) removeQueuedMessageByID(messageID string) (string, bool) {
 	return "", false
 }
 
+// attachManualGroupSession connects the first message in a manually created
+// group to its bound native agent session. Manual bindings come from
+// e.agent.ListSessions(), so they are intentionally valid only for the
+// engine's top-level agent and SessionManager, never per-workspace pairs.
+func (e *Engine) attachManualGroupSession(sessions *SessionManager, agent Agent, msg *Message) {
+	if sessions == nil || e.workspaceBindings == nil || e.agent == nil || msg == nil {
+		return
+	}
+
+	channelKey := effectiveWorkspaceChannelKey(msg)
+	if channelKey == "" {
+		return
+	}
+	if sessions.GetActive(msg.SessionKey) != nil {
+		return
+	}
+
+	binding := e.workspaceBindings.Lookup(manualGroupBindingNamespace+e.name, channelKey)
+	if binding == nil {
+		return
+	}
+	// Lookup returns manager-owned storage that may be mutated or replaced;
+	// copy every needed value before using it outside the manager lock.
+	agentSID, channelName := binding.AgentSessionID, binding.ChannelName
+	if agentSID == "" {
+		return
+	}
+	if sessions != e.sessions || agent != e.agent {
+		slog.Debug("manual group session attachment skipped for non-primary workspace",
+			"session_key", msg.SessionKey,
+			"agent_session_id", agentSID,
+			"chat", channelKey,
+		)
+		return
+	}
+
+	for _, existing := range sessions.AllSessions() {
+		if existing.GetAgentSessionID() == agentSID {
+			slog.Info("manual group session attachment skipped: agent session already attached",
+				"reason", "first session key already owns native session",
+				"session_key", msg.SessionKey,
+				"agent_session_id", agentSID,
+				"chat", channelKey,
+			)
+			return
+		}
+	}
+
+	sessions.SwitchToAgentSession(msg.SessionKey, agentSID, agent.Name(), channelName)
+	slog.Info("manual group session attached",
+		"session_key", msg.SessionKey,
+		"agent_session_id", agentSID,
+		"chat", channelKey,
+	)
+}
+
 // isStaleUserMessageLocked reports whether timeMs is strictly older than the
 // latest user message already accepted for this session (completed, in-flight,
 // or queued). state.mu must be held by the caller. timeMs <= 0 is never stale.
@@ -3366,6 +3422,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		return
 	}
 
+	e.attachManualGroupSession(sessions, agent, msg)
 	session := sessions.GetOrCreateActive(msg.SessionKey)
 	sessions.UpdateUserMeta(msg.SessionKey, msg.UserName, msg.ChatName)
 	// Ensure an interactiveState entry exists before taking the session lock.

@@ -14,6 +14,7 @@ import (
 
 const defaultAgentSessionListLimit = 100
 const defaultAgentSessionHistoryLimit = 50
+const manualGroupBindingNamespace = "manual:"
 
 var (
 	ErrAgentSessionHistoryUnsupported = errors.New("agent session history is unsupported")
@@ -174,7 +175,7 @@ func (e *Engine) CreateAgentSessionGroup(ctx context.Context, sessionID, ownerUs
 		return AgentSessionGroupResult{}, ErrAgentSessionNotFound
 	}
 
-	namespace := "manual:" + e.name
+	namespace := manualGroupBindingNamespace + e.name
 	bindings := e.ensureAgentSessionBindings()
 	if channelKey, _, found := bindings.LookupBySessionID(namespace, sessionID); found {
 		return AgentSessionGroupResult{
@@ -257,7 +258,7 @@ func (e *Engine) populateAgentSessionBindings(views []AgentSessionView) {
 	e.autoGroupSweepMu.Lock()
 	defer e.autoGroupSweepMu.Unlock()
 	bindings := e.workspaceBindings
-	namespace := "manual:" + e.name
+	namespace := manualGroupBindingNamespace + e.name
 	for i := range views {
 		if ccSessionID := ccSessionIDs[views[i].ID]; ccSessionID != "" {
 			views[i].Bound = true

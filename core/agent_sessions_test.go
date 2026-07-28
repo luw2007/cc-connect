@@ -366,6 +366,124 @@ func TestAgentSessionGroup_PersistenceFailureIsReturned(t *testing.T) {
 	}
 }
 
+func TestAgentSessionAttachManualGroupSession_GuardsAndPreservesSelection(t *testing.T) {
+	const (
+		engineName     = "project-a"
+		sessionKey     = "feishu:chat-1:user-1"
+		channelKey     = "feishu:chat-1"
+		boundSessionID = "agent-session-1"
+	)
+
+	newEngine := func() (*Engine, *agentSessionTestAgent) {
+		agent := &agentSessionTestAgent{name: "native"}
+		e := NewEngine(engineName, agent, nil, "", LangEnglish)
+		e.workspaceBindings = NewWorkspaceBindingManager("")
+		return e, agent
+	}
+	msg := func() *Message {
+		return &Message{SessionKey: sessionKey, Platform: "feishu"}
+	}
+
+	t.Run("no binding", func(t *testing.T) {
+		e, agent := newEngine()
+		e.attachManualGroupSession(e.sessions, agent, msg())
+		if got := e.sessions.GetActive(sessionKey); got != nil {
+			t.Fatalf("active session = %#v, want nil", got)
+		}
+	})
+
+	t.Run("binding without agent session ID", func(t *testing.T) {
+		e, agent := newEngine()
+		e.workspaceBindings.BindSession(manualGroupBindingNamespace+engineName, channelKey, "Manual Group", "/repo", "")
+		e.attachManualGroupSession(e.sessions, agent, msg())
+		if got := e.sessions.GetActive(sessionKey); got != nil {
+			t.Fatalf("active session = %#v, want nil", got)
+		}
+	})
+
+	t.Run("existing active session wins", func(t *testing.T) {
+		e, agent := newEngine()
+		e.workspaceBindings.BindSession(manualGroupBindingNamespace+engineName, channelKey, "Manual Group", "/repo", boundSessionID)
+		existing := e.sessions.SwitchToAgentSession(sessionKey, "user-selected-session", agent.Name(), "User Selection")
+
+		// A Lookup would refresh this now-missing store and clear the in-memory
+		// binding. Keeping it proves the active-session guard runs first.
+		e.workspaceBindings.storePath = filepath.Join(t.TempDir(), "missing-bindings.json")
+		e.attachManualGroupSession(e.sessions, agent, msg())
+
+		if got := e.sessions.GetActive(sessionKey); got != existing {
+			t.Fatalf("active session = %#v, want existing %#v", got, existing)
+		}
+		if got := existing.GetAgentSessionID(); got != "user-selected-session" {
+			t.Fatalf("agent session ID = %q, want user-selected-session", got)
+		}
+		e.workspaceBindings.mu.RLock()
+		bindingStillPresent := e.workspaceBindings.lookupLocked(manualGroupBindingNamespace+engineName, channelKey) != nil
+		e.workspaceBindings.mu.RUnlock()
+		if !bindingStillPresent {
+			t.Fatal("binding was refreshed despite an active session")
+		}
+	})
+
+	t.Run("first session key wins bound agent session", func(t *testing.T) {
+		e, agent := newEngine()
+		e.workspaceBindings.BindSession(manualGroupBindingNamespace+engineName, channelKey, "Manual Group", "/repo", boundSessionID)
+		firstKey := "feishu:chat-1:user-1"
+		secondKey := "feishu:chat-1:user-2"
+		first := e.sessions.SwitchToAgentSession(firstKey, boundSessionID, agent.Name(), "Manual Group")
+
+		e.attachManualGroupSession(e.sessions, agent, &Message{SessionKey: secondKey, Platform: "feishu"})
+
+		if got := e.sessions.GetActive(secondKey); got != nil {
+			t.Fatalf("second key active session = %#v, want nil", got)
+		}
+		if got := e.sessions.GetActive(firstKey); got != first {
+			t.Fatalf("first key active session = %#v, want original %#v", got, first)
+		}
+		if got := e.sessions.AllSessions(); len(got) != 1 {
+			t.Fatalf("all sessions = %#v, want only first key's session", got)
+		}
+	})
+
+	t.Run("multi-workspace session manager is ignored", func(t *testing.T) {
+		e, agent := newEngine()
+		e.workspaceBindings.BindSession(manualGroupBindingNamespace+engineName, channelKey, "Manual Group", "/repo", boundSessionID)
+		workspaceSessions := NewSessionManager("")
+
+		e.attachManualGroupSession(workspaceSessions, agent, msg())
+
+		if got := workspaceSessions.GetActive(sessionKey); got != nil {
+			t.Fatalf("workspace active session = %#v, want nil", got)
+		}
+		if got := e.sessions.GetActive(sessionKey); got != nil {
+			t.Fatalf("top-level active session = %#v, want nil", got)
+		}
+	})
+
+	t.Run("workspace agent is ignored", func(t *testing.T) {
+		e, _ := newEngine()
+		e.workspaceBindings.BindSession(manualGroupBindingNamespace+engineName, channelKey, "Manual Group", "/repo", boundSessionID)
+		workspaceAgent := &agentSessionTestAgent{name: "workspace-native"}
+
+		e.attachManualGroupSession(e.sessions, workspaceAgent, msg())
+
+		if got := e.sessions.GetActive(sessionKey); got != nil {
+			t.Fatalf("active session = %#v, want nil", got)
+		}
+	})
+
+	t.Run("empty channel key", func(t *testing.T) {
+		e, agent := newEngine()
+		e.workspaceBindings.BindSession(manualGroupBindingNamespace+engineName, channelKey, "Manual Group", "/repo", boundSessionID)
+
+		e.attachManualGroupSession(e.sessions, agent, &Message{Platform: "feishu"})
+
+		if got := e.sessions.GetActive(""); got != nil {
+			t.Fatalf("active session = %#v, want nil", got)
+		}
+	})
+}
+
 // agentSessionRaceAgent is the mutex-guarded counterpart of
 // agentSessionTestAgent: the concurrency regression drives ListSessions from
 // two goroutines, so an unguarded counter would trip -race for the wrong
