@@ -32,11 +32,15 @@ func resolveCodexHomeDir(explicit string) string {
 }
 
 // listCodexSessions scans the codex sessions directory for JSONL transcript
-// files whose cwd matches workDir.
+// files whose cwd matches workDir. An empty workDir disables cwd filtering.
 func listCodexSessions(workDir, codexHome string) ([]core.AgentSessionInfo, error) {
-	absWorkDir, err := filepath.Abs(workDir)
-	if err != nil {
-		absWorkDir = workDir
+	absWorkDir := ""
+	if workDir != "" {
+		var err error
+		absWorkDir, err = filepath.Abs(workDir)
+		if err != nil {
+			absWorkDir = workDir
+		}
 	}
 
 	sessionsDir := filepath.Join(resolveCodexHomeDir(codexHome), "sessions")
@@ -213,6 +217,7 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 		Summary:      summary,
 		MessageCount: msgCount,
 		ModifiedAt:   stat.ModTime(),
+		ProjectPath:  sessionCwd,
 	}
 }
 

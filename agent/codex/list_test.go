@@ -163,3 +163,139 @@ func TestAgentListSessions_LongThreadNameTruncated(t *testing.T) {
 		t.Fatalf("ListSessions()[0].Summary = %q, want %q", sessions[0].Summary, want)
 	}
 }
+
+func TestListSessionsAndListAllSessions(t *testing.T) {
+	tempDir := t.TempDir()
+	codexHome := filepath.Join(tempDir, "codex-home")
+	workDir := filepath.Join(tempDir, "project-a")
+	otherWorkDir := filepath.Join(tempDir, "project-b")
+	baseTime := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
+
+	writeCodexSessionFile(t, codexHome, "2026/07/28/a.jsonl", "session-a", workDir, baseTime, "prompt a")
+	writeCodexSessionFile(t, codexHome, "2026/07/28/b.jsonl", "session-b", otherWorkDir, baseTime.Add(time.Minute), "prompt b")
+
+	agent := &Agent{workDir: workDir, codexHome: codexHome}
+	projectSessions, err := agent.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(projectSessions) != 1 {
+		t.Fatalf("ListSessions() returned %d sessions, want 1: %+v", len(projectSessions), projectSessions)
+	}
+	if got := projectSessions[0]; got.ID != "session-a" || got.ProjectPath != workDir {
+		t.Fatalf("ListSessions()[0] = %+v, want session-a with ProjectPath %q", got, workDir)
+	}
+
+	allSessions, err := agent.ListAllSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListAllSessions() error = %v", err)
+	}
+	if len(allSessions) != 2 {
+		t.Fatalf("ListAllSessions() returned %d sessions, want 2: %+v", len(allSessions), allSessions)
+	}
+	wantProjectPaths := map[string]string{
+		"session-a": workDir,
+		"session-b": otherWorkDir,
+	}
+	for _, session := range allSessions {
+		if want := wantProjectPaths[session.ID]; session.ProjectPath != want {
+			t.Errorf("session %q ProjectPath = %q, want %q", session.ID, session.ProjectPath, want)
+		}
+		delete(wantProjectPaths, session.ID)
+	}
+	if len(wantProjectPaths) != 0 {
+		t.Fatalf("ListAllSessions() missing sessions: %v", wantProjectPaths)
+	}
+}
+
+func TestListAllSessionsKeepsNewest100(t *testing.T) {
+	tempDir := t.TempDir()
+	codexHome := filepath.Join(tempDir, "codex-home")
+	baseTime := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 105; i++ {
+		id := fmt.Sprintf("session-%03d", i)
+		writeCodexSessionFile(
+			t,
+			codexHome,
+			fmt.Sprintf("2026/07/28/%03d.jsonl", i),
+			id,
+			fmt.Sprintf("/project/%03d", i),
+			baseTime.Add(time.Duration(i)*time.Minute),
+			fmt.Sprintf("prompt %d", i),
+		)
+	}
+
+	agent := &Agent{codexHome: codexHome}
+	sessions, err := agent.ListAllSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListAllSessions() error = %v", err)
+	}
+	if len(sessions) != 100 {
+		t.Fatalf("ListAllSessions() returned %d sessions, want 100", len(sessions))
+	}
+	if got := sessions[0].ID; got != "session-104" {
+		t.Errorf("newest session ID = %q, want session-104", got)
+	}
+	if got := sessions[len(sessions)-1].ID; got != "session-005" {
+		t.Errorf("oldest retained session ID = %q, want session-005", got)
+	}
+	for _, session := range sessions {
+		if session.ID == "session-004" {
+			t.Fatalf("ListAllSessions() retained an older session: %+v", session)
+		}
+	}
+}
+
+func TestListAllSessionsSkipsInvalidSessionFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	codexHome := filepath.Join(tempDir, "codex-home")
+	baseTime := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
+
+	writeCodexSessionFile(t, codexHome, "valid.jsonl", "valid-session", "/project/valid", baseTime, "valid prompt")
+	writeRawSessionFile(t, codexHome, "corrupt.jsonl", "not json\n", baseTime.Add(time.Minute))
+	writeRawSessionFile(
+		t,
+		codexHome,
+		"no-meta.jsonl",
+		`{"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"missing meta"}]}}`+"\n",
+		baseTime.Add(2*time.Minute),
+	)
+
+	agent := &Agent{codexHome: codexHome}
+	sessions, err := agent.ListAllSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListAllSessions() error = %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("ListAllSessions() returned %d sessions, want only the valid session: %+v", len(sessions), sessions)
+	}
+	if got := sessions[0].ID; got != "valid-session" {
+		t.Fatalf("ListAllSessions()[0].ID = %q, want valid-session", got)
+	}
+}
+
+func writeCodexSessionFile(t *testing.T, codexHome, relativePath, id, cwd string, modifiedAt time.Time, prompt string) {
+	t.Helper()
+	contents := fmt.Sprintf(
+		"%s\n%s\n%s\n",
+		fmt.Sprintf(`{"type":"session_meta","payload":{"id":%q,"cwd":%q}}`, id, cwd),
+		fmt.Sprintf(`{"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":%q}]}}`, prompt),
+		`{"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"answer"}]}}`,
+	)
+	writeRawSessionFile(t, codexHome, relativePath, contents, modifiedAt)
+}
+
+func writeRawSessionFile(t *testing.T, codexHome, relativePath, contents string, modifiedAt time.Time) {
+	t.Helper()
+	path := filepath.Join(codexHome, "sessions", relativePath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+	if err := os.Chtimes(path, modifiedAt, modifiedAt); err != nil {
+		t.Fatalf("Chtimes(%q): %v", path, err)
+	}
+}
