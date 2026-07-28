@@ -212,7 +212,6 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 
 	var sessionID string
 	var sessionCwd string
-	var sessionSource json.RawMessage
 	var summary string
 	var msgCount int
 	userMsgSeen := 0
@@ -236,18 +235,13 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 
 		switch entry.Type {
 		case "session_meta":
-			if sessionID != "" {
-				continue
-			}
 			var meta struct {
-				ID     string          `json:"id"`
-				Cwd    string          `json:"cwd"`
-				Source json.RawMessage `json:"source"`
+				ID  string `json:"id"`
+				Cwd string `json:"cwd"`
 			}
 			if json.Unmarshal(entry.Payload, &meta) == nil {
 				sessionID = meta.ID
 				sessionCwd = meta.Cwd
-				sessionSource = meta.Source
 			}
 
 		case "response_item":
@@ -283,9 +277,6 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 	}
 
 	if sessionID == "" {
-		return nil
-	}
-	if isSubagentSessionSource(sessionSource) {
 		return nil
 	}
 
