@@ -175,6 +175,7 @@ func TestListSessionsAndListAllSessions(t *testing.T) {
 	writeCodexSessionFile(t, codexHome, "2026/07/28/b.jsonl", "session-b", otherWorkDir, baseTime.Add(time.Minute), "prompt b")
 
 	agent := &Agent{workDir: workDir, codexHome: codexHome}
+	codexSessionDeepParseCount.Store(0)
 	projectSessions, err := agent.ListSessions(context.Background())
 	if err != nil {
 		t.Fatalf("ListSessions() error = %v", err)
@@ -184,6 +185,9 @@ func TestListSessionsAndListAllSessions(t *testing.T) {
 	}
 	if got := projectSessions[0]; got.ID != "session-a" || got.ProjectPath != workDir {
 		t.Fatalf("ListSessions()[0] = %+v, want session-a with ProjectPath %q", got, workDir)
+	}
+	if got := codexSessionDeepParseCount.Load(); got != 1 {
+		t.Fatalf("ListSessions() deeply parsed %d files, want only the cwd match", got)
 	}
 
 	allSessions, err := agent.ListAllSessions(context.Background())
@@ -227,12 +231,16 @@ func TestListAllSessionsKeepsNewest100(t *testing.T) {
 	}
 
 	agent := &Agent{codexHome: codexHome}
+	codexSessionDeepParseCount.Store(0)
 	sessions, err := agent.ListAllSessions(context.Background())
 	if err != nil {
 		t.Fatalf("ListAllSessions() error = %v", err)
 	}
 	if len(sessions) != 100 {
 		t.Fatalf("ListAllSessions() returned %d sessions, want 100", len(sessions))
+	}
+	if got := codexSessionDeepParseCount.Load(); got > 100 {
+		t.Fatalf("ListAllSessions() deeply parsed %d session files, want at most 100", got)
 	}
 	if got := sessions[0].ID; got != "session-104" {
 		t.Errorf("newest session ID = %q, want session-104", got)
@@ -244,6 +252,68 @@ func TestListAllSessionsKeepsNewest100(t *testing.T) {
 		if session.ID == "session-004" {
 			t.Fatalf("ListAllSessions() retained an older session: %+v", session)
 		}
+	}
+}
+
+func TestListCodexSessionsDeepParsesAtMostLimit(t *testing.T) {
+	tempDir := t.TempDir()
+	codexHome := filepath.Join(tempDir, "codex-home")
+	baseTime := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
+
+	const (
+		fileCount = 8
+		limit     = 3
+	)
+	for i := 0; i < fileCount; i++ {
+		writeCodexSessionFile(
+			t,
+			codexHome,
+			fmt.Sprintf("session-%d.jsonl", i),
+			fmt.Sprintf("session-%d", i),
+			"/project/shared",
+			baseTime.Add(time.Duration(i)*time.Minute),
+			fmt.Sprintf("prompt %d", i),
+		)
+	}
+
+	codexSessionDeepParseCount.Store(0)
+	sessions, err := listCodexSessions("", codexHome, limit)
+	if err != nil {
+		t.Fatalf("listCodexSessions() error = %v", err)
+	}
+	if got := codexSessionDeepParseCount.Load(); got > limit {
+		t.Fatalf("listCodexSessions() deeply parsed %d of %d files, want at most %d", got, fileCount, limit)
+	}
+	if len(sessions) != limit {
+		t.Fatalf("listCodexSessions() returned %d sessions, want %d", len(sessions), limit)
+	}
+	if got := sessions[0].ID; got != "session-7" {
+		t.Fatalf("newest session ID = %q, want session-7", got)
+	}
+}
+
+func TestListAllSessionsFindsSessionMetaAfterFirstLine(t *testing.T) {
+	tempDir := t.TempDir()
+	codexHome := filepath.Join(tempDir, "codex-home")
+	modifiedAt := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
+	contents := `{"type":"turn_context","payload":{"turn_id":"turn-1"}}` + "\n" +
+		`{"type":"session_meta","payload":{"id":"session-late-meta","cwd":"/project/late-meta"}}` + "\n" +
+		`{"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"late meta prompt"}]}}` + "\n"
+	writeRawSessionFile(t, codexHome, "late-meta.jsonl", contents, modifiedAt)
+
+	agent := &Agent{codexHome: codexHome}
+	sessions, err := agent.ListAllSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListAllSessions() error = %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("ListAllSessions() returned %d sessions, want 1: %+v", len(sessions), sessions)
+	}
+	if got := sessions[0]; got.ID != "session-late-meta" || got.ProjectPath != "/project/late-meta" {
+		t.Fatalf("ListAllSessions()[0] = %+v, want late session_meta values", got)
+	}
+	if got := sessions[0]; got.Summary != "late meta prompt" || got.MessageCount != 1 {
+		t.Fatalf("ListAllSessions()[0] = %+v, want summary and message count from full parse", got)
 	}
 }
 

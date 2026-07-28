@@ -10,10 +10,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 )
+
+// codexSessionDeepParseCount exposes full transcript parse work to package tests.
+var codexSessionDeepParseCount atomic.Int64
 
 // resolveCodexHomeDir returns the effective CODEX_HOME directory.
 // Priority: explicit config value > CODEX_HOME env > ~/.codex
@@ -31,9 +35,18 @@ func resolveCodexHomeDir(explicit string) string {
 	return filepath.Join(homeDir, ".codex")
 }
 
+type codexSessionCandidate struct {
+	path       string
+	id         string
+	cwd        string
+	modifiedAt time.Time
+}
+
 // listCodexSessions scans the codex sessions directory for JSONL transcript
 // files whose cwd matches workDir. An empty workDir disables cwd filtering.
-func listCodexSessions(workDir, codexHome string) ([]core.AgentSessionInfo, error) {
+// maxResults limits how many matching transcripts receive a full parse; values
+// less than or equal to zero return all matches.
+func listCodexSessions(workDir, codexHome string, maxResults int) ([]core.AgentSessionInfo, error) {
 	absWorkDir := ""
 	if workDir != "" {
 		var err error
@@ -45,25 +58,42 @@ func listCodexSessions(workDir, codexHome string) ([]core.AgentSessionInfo, erro
 
 	sessionsDir := filepath.Join(resolveCodexHomeDir(codexHome), "sessions")
 
-	var files []string
+	var candidates []codexSessionCandidate
 	_ = filepath.Walk(sessionsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
-		if strings.HasSuffix(path, ".jsonl") {
-			files = append(files, path)
+		if !strings.HasSuffix(path, ".jsonl") {
+			return nil
 		}
+
+		candidate := readCodexSessionCandidate(path)
+		if candidate == nil {
+			return nil
+		}
+		if absWorkDir != "" && candidate.cwd != absWorkDir {
+			return nil
+		}
+		candidates = append(candidates, *candidate)
 		return nil
 	})
 
-	if len(files) == 0 {
+	if len(candidates) == 0 {
 		return nil, nil
 	}
 
 	sessionTitles := loadCodexSessionTitles(codexHome)
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].modifiedAt.After(candidates[j].modifiedAt)
+	})
+	if maxResults > 0 && len(candidates) > maxResults {
+		candidates = candidates[:maxResults]
+	}
+
 	var sessions []core.AgentSessionInfo
-	for _, f := range files {
-		info := parseCodexSessionFile(f, absWorkDir)
+	for _, candidate := range candidates {
+		info := parseCodexSessionFile(candidate.path, absWorkDir)
 		if info != nil {
 			if title := sessionTitles[info.ID]; title != "" {
 				if titleRunes := []rune(title); len(titleRunes) > 60 {
@@ -71,14 +101,10 @@ func listCodexSessions(workDir, codexHome string) ([]core.AgentSessionInfo, erro
 				}
 				info.Summary = title
 			}
-			patchSessionSource(info.ID, codexHome)
+			patchSessionSourceFile(candidate.path)
 			sessions = append(sessions, *info)
 		}
 	}
-
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].ModifiedAt.After(sessions[j].ModifiedAt)
-	})
 
 	return sessions, nil
 }
@@ -117,7 +143,62 @@ func loadCodexSessionTitles(codexHome string) map[string]string {
 
 // parseCodexSessionFile reads a Codex JSONL transcript.
 // Returns nil if the session's cwd doesn't match filterCwd.
+
+// readCodexSessionCandidate performs the cheap first pass: stat the file and
+// stop scanning as soon as a valid session_meta entry is found.
+func readCodexSessionCandidate(path string) *codexSessionCandidate {
+	stat, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	// Session metadata is normally the first short line. Keep the initial
+	// allocation small while retaining compatibility with larger JSONL lines.
+	scanner.Buffer(make([]byte, 4*1024), 256*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var entry struct {
+			Type    string          `json:"type"`
+			Payload json.RawMessage `json:"payload"`
+		}
+		if json.Unmarshal(line, &entry) != nil || entry.Type != "session_meta" {
+			continue
+		}
+
+		var meta struct {
+			ID  string `json:"id"`
+			Cwd string `json:"cwd"`
+		}
+		if json.Unmarshal(entry.Payload, &meta) != nil || meta.ID == "" {
+			continue
+		}
+		return &codexSessionCandidate{
+			path:       path,
+			id:         meta.ID,
+			cwd:        meta.Cwd,
+			modifiedAt: stat.ModTime(),
+		}
+	}
+
+	return nil
+}
+
+// parseCodexSessionFile reads a Codex JSONL transcript.
+// Returns nil if the session's cwd doesn't match filterCwd.
 func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
+	codexSessionDeepParseCount.Add(1)
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -131,7 +212,6 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 
 	var sessionID string
 	var sessionCwd string
-	var sessionSource json.RawMessage
 	var summary string
 	var msgCount int
 	userMsgSeen := 0
@@ -155,18 +235,13 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 
 		switch entry.Type {
 		case "session_meta":
-			if sessionID != "" {
-				continue
-			}
 			var meta struct {
-				ID     string          `json:"id"`
-				Cwd    string          `json:"cwd"`
-				Source json.RawMessage `json:"source"`
+				ID  string `json:"id"`
+				Cwd string `json:"cwd"`
 			}
 			if json.Unmarshal(entry.Payload, &meta) == nil {
 				sessionID = meta.ID
 				sessionCwd = meta.Cwd
-				sessionSource = meta.Source
 			}
 
 		case "response_item":
@@ -204,9 +279,6 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 	if sessionID == "" {
 		return nil
 	}
-	if isSubagentSessionSource(sessionSource) {
-		return nil
-	}
 
 	if len([]rune(summary)) > 60 {
 		summary = string([]rune(summary)[:60]) + "..."
@@ -219,17 +291,6 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 		ModifiedAt:   stat.ModTime(),
 		ProjectPath:  sessionCwd,
 	}
-}
-
-// isSubagentSessionSource reports whether Codex recorded the rollout as an
-// internal subagent thread rather than a top-level user session.
-func isSubagentSessionSource(source json.RawMessage) bool {
-	var object map[string]json.RawMessage
-	if json.Unmarshal(source, &object) != nil {
-		return false
-	}
-	_, ok := object["subagent"]
-	return ok
 }
 
 // findSessionFile locates the JSONL transcript for a given session ID.
@@ -336,7 +397,10 @@ func patchSessionSource(sessionID, codexHome string) {
 	if path == "" {
 		return
 	}
+	patchSessionSourceFile(path)
+}
 
+func patchSessionSourceFile(path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return

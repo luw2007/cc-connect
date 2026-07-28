@@ -516,7 +516,7 @@ func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error)
 	codexHome := a.codexHome
 	workDir := a.workDir
 	a.mu.RUnlock()
-	return listCodexSessions(workDir, codexHome)
+	return listCodexSessions(workDir, codexHome, 0)
 }
 
 func (a *Agent) ListAllSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
@@ -524,14 +524,7 @@ func (a *Agent) ListAllSessions(_ context.Context) ([]core.AgentSessionInfo, err
 	codexHome := a.codexHome
 	a.mu.RUnlock()
 
-	sessions, err := listCodexSessions("", codexHome)
-	if err != nil {
-		return nil, err
-	}
-	if len(sessions) > 100 {
-		sessions = sessions[:100]
-	}
-	return sessions, nil
+	return listCodexSessions("", codexHome, 100)
 }
 
 func (a *Agent) GetSessionHistory(_ context.Context, sessionID string, limit int) ([]core.HistoryEntry, error) {
