@@ -145,10 +145,10 @@ type GlobalProviderInfo struct {
 		Model string `json:"model"`
 		Alias string `json:"alias,omitempty"`
 	} `json:"models,omitempty"`
-	Endpoints       map[string]string              `json:"endpoints,omitempty"`
-	AgentModels     map[string]string              `json:"agent_models,omitempty"`
-	AgentModelLists map[string][]GlobalModelEntry   `json:"agent_model_lists,omitempty"`
-	Codex           *GlobalCodexConfig              `json:"codex,omitempty"`
+	Endpoints       map[string]string             `json:"endpoints,omitempty"`
+	AgentModels     map[string]string             `json:"agent_models,omitempty"`
+	AgentModelLists map[string][]GlobalModelEntry `json:"agent_model_lists,omitempty"`
+	Codex           *GlobalCodexConfig            `json:"codex,omitempty"`
 }
 
 // GlobalModelEntry is a model entry inside AgentModelLists.
@@ -618,6 +618,8 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 	switch sub {
 	case "":
 		m.handleProjectDetail(w, r, projName, engine)
+	case "agent-sessions":
+		m.handleProjectAgentSessions(w, r, engine, rest)
 	case "sessions":
 		m.handleProjectSessions(w, r, projName, engine, rest)
 	case "send":
@@ -911,6 +913,147 @@ func (m *ManagementServer) handleProjectUsers(w http.ResponseWriter, r *http.Req
 	default:
 		mgmtError(w, http.StatusMethodNotAllowed, "GET or PATCH only")
 	}
+}
+
+// ── Native agent session endpoints ───────────────────────────
+
+func (m *ManagementServer) handleProjectAgentSessions(w http.ResponseWriter, r *http.Request, e *Engine, rest string) {
+	if rest == "" {
+		m.handleProjectAgentSessionList(w, r, e)
+		return
+	}
+
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[0] == "" {
+		mgmtError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	switch parts[1] {
+	case "history":
+		m.handleProjectAgentSessionHistory(w, r, e, parts[0])
+	case "group":
+		m.handleProjectAgentSessionGroup(w, r, e, parts[0])
+	default:
+		mgmtError(w, http.StatusNotFound, "not found")
+	}
+}
+
+func (m *ManagementServer) handleProjectAgentSessionList(w http.ResponseWriter, r *http.Request, e *Engine) {
+	if r.Method != http.MethodGet {
+		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+
+	query := r.URL.Query()
+	var since, until time.Time
+	var err error
+	if value := query.Get("since"); value != "" {
+		since, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			mgmtError(w, http.StatusBadRequest, "since must be RFC3339")
+			return
+		}
+	}
+	if value := query.Get("until"); value != "" {
+		until, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			mgmtError(w, http.StatusBadRequest, "until must be RFC3339")
+			return
+		}
+	}
+
+	scope := query.Get("scope")
+	if scope != "" && scope != "project" && scope != "all" {
+		mgmtError(w, http.StatusBadRequest, "scope must be project or all")
+		return
+	}
+
+	limit := 0
+	if value := query.Get("limit"); value != "" {
+		if parsed, parseErr := strconv.Atoi(value); parseErr == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	result, err := e.ListAgentSessions(r.Context(), AgentSessionQuery{
+		Since: since,
+		Until: until,
+		Limit: limit,
+		Scope: scope,
+	})
+	if err != nil {
+		mgmtError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	mgmtJSON(w, http.StatusOK, result)
+}
+
+func (m *ManagementServer) handleProjectAgentSessionHistory(w http.ResponseWriter, r *http.Request, e *Engine, sessionID string) {
+	if r.Method != http.MethodGet {
+		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+
+	limit := 0
+	if value := r.URL.Query().Get("limit"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	history, err := e.AgentSessionHistory(r.Context(), sessionID, limit)
+	if err != nil {
+		if errors.Is(err, ErrAgentSessionHistoryUnsupported) {
+			mgmtError(w, http.StatusNotImplemented, err.Error())
+			return
+		}
+		mgmtError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	mgmtJSON(w, http.StatusOK, map[string]any{
+		"id":         sessionID,
+		"agent_type": e.agent.Name(),
+		"history":    history,
+		"count":      len(history),
+	})
+}
+
+func (m *ManagementServer) handleProjectAgentSessionGroup(w http.ResponseWriter, r *http.Request, e *Engine, sessionID string) {
+	if r.Method != http.MethodPost {
+		mgmtError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+
+	var body struct {
+		OwnerUserID string `json:"owner_user_id"`
+		Name        string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	result, err := e.CreateAgentSessionGroup(r.Context(), sessionID, body.OwnerUserID, body.Name)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrAgentSessionOwnerRequired):
+			mgmtError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ErrAgentSessionNotFound):
+			mgmtError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrAgentSessionGroupUnsupported):
+			mgmtError(w, http.StatusNotImplemented, err.Error())
+		default:
+			mgmtError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	status := http.StatusOK
+	if result.Created {
+		status = http.StatusCreated
+	}
+	mgmtJSON(w, status, result)
 }
 
 // ── Session endpoints ─────────────────────────────────────────
@@ -1916,10 +2059,10 @@ func (m *ManagementServer) handleCCSwitchProviders(w http.ResponseWriter, r *htt
 // applying per-agent-type overrides for base_url, model, and models.
 func resolveGlobalProviderForAgent(g GlobalProviderInfo, agentType string) ProviderConfig {
 	pc := ProviderConfig{
-		Name:   g.Name,
-		APIKey: g.APIKey,
+		Name:    g.Name,
+		APIKey:  g.APIKey,
 		BaseURL: g.BaseURL,
-		Model:  g.Model,
+		Model:   g.Model,
 	}
 	if ep, ok := g.Endpoints[agentType]; ok && ep != "" {
 		pc.BaseURL = ep

@@ -79,6 +79,83 @@ type mgmtResponse struct {
 	Error string          `json:"error,omitempty"`
 }
 
+type managementAgentSessionAgent struct {
+	sessions []AgentSessionInfo
+}
+
+func (a *managementAgentSessionAgent) Name() string { return "native-test" }
+func (a *managementAgentSessionAgent) StartSession(context.Context, string) (AgentSession, error) {
+	return nil, nil
+}
+func (a *managementAgentSessionAgent) ListSessions(context.Context) ([]AgentSessionInfo, error) {
+	return a.sessions, nil
+}
+func (a *managementAgentSessionAgent) Stop() error { return nil }
+
+type managementAgentSessionHistoryAgent struct {
+	*managementAgentSessionAgent
+	history []HistoryEntry
+}
+
+func (a *managementAgentSessionHistoryAgent) GetSessionHistory(context.Context, string, int) ([]HistoryEntry, error) {
+	return a.history, nil
+}
+
+type managementAgentSessionGroupPlatform struct {
+	createCalls int
+	chatID      string
+}
+
+func (p *managementAgentSessionGroupPlatform) Name() string { return "group-test" }
+func (p *managementAgentSessionGroupPlatform) Start(MessageHandler) error {
+	return nil
+}
+func (p *managementAgentSessionGroupPlatform) Reply(context.Context, any, string) error {
+	return nil
+}
+func (p *managementAgentSessionGroupPlatform) Send(context.Context, any, string) error {
+	return nil
+}
+func (p *managementAgentSessionGroupPlatform) Stop() error { return nil }
+func (p *managementAgentSessionGroupPlatform) CreateGroupChat(context.Context, string, string, string) (string, error) {
+	p.createCalls++
+	return p.chatID, nil
+}
+
+func managementRequest(t *testing.T, method, url, token string, body any) (int, mgmtResponse) {
+	t.Helper()
+
+	var reader io.Reader
+	if body != nil {
+		var buf bytes.Buffer
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			t.Fatalf("encode %s body: %v", method, err)
+		}
+		reader = &buf
+	}
+	req, err := http.NewRequest(method, url, reader)
+	if err != nil {
+		t.Fatalf("create %s request: %v", method, err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer resp.Body.Close()
+
+	var decoded mgmtResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode %s response: %v", method, err)
+	}
+	return resp.StatusCode, decoded
+}
+
 func mgmtGet(t *testing.T, url, token string) mgmtResponse {
 	t.Helper()
 	req, _ := http.NewRequest("GET", url, nil)
@@ -3008,5 +3085,214 @@ func TestMgmt_SetupWeixinPoll_RejectsMalformedAPIURL(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("api_url=%q: status=%d, want %d (body=%s)", bad, w.Code, http.StatusBadRequest, w.Body.String())
 		}
+	}
+}
+
+func TestManagementAgentSessions_ListValidationAndResponse(t *testing.T) {
+	_, ts, e := testManagementServer(t, "tok")
+	base := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	e.agent = &managementAgentSessionAgent{sessions: []AgentSessionInfo{
+		{ID: "native-1", Summary: "first", MessageCount: 2, ModifiedAt: base, ProjectPath: "/work/one"},
+		{ID: "native-2", Summary: "second", MessageCount: 3, ModifiedAt: base.Add(-time.Hour), ProjectPath: "/work/two"},
+	}}
+
+	tests := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantCount  int
+	}{
+		{name: "invalid since", query: "?since=not-a-time", wantStatus: http.StatusBadRequest},
+		{name: "invalid until", query: "?until=2026-07-28", wantStatus: http.StatusBadRequest},
+		{name: "invalid scope", query: "?scope=workspace", wantStatus: http.StatusBadRequest},
+		{name: "invalid limit uses default", query: "?limit=invalid", wantStatus: http.StatusOK, wantCount: 2},
+		{name: "non-positive limit uses default", query: "?limit=0", wantStatus: http.StatusOK, wantCount: 2},
+		{
+			name:       "valid query returns direct result",
+			query:      "?since=2026-07-28T08:00:00Z&until=2026-07-28T11:00:00Z&limit=1&scope=project",
+			wantStatus: http.StatusOK,
+			wantCount:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, response := managementRequest(t, http.MethodGet, ts.URL+"/api/v1/projects/test-project/agent-sessions"+tt.query, "tok", nil)
+			if status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (error=%q)", status, tt.wantStatus, response.Error)
+			}
+			if tt.wantStatus != http.StatusOK {
+				if response.OK {
+					t.Fatal("error response has ok=true")
+				}
+				return
+			}
+
+			var result AgentSessionResult
+			if err := json.Unmarshal(response.Data, &result); err != nil {
+				t.Fatalf("decode AgentSessionResult: %v", err)
+			}
+			if !response.OK || result.Count != tt.wantCount || len(result.Sessions) != tt.wantCount {
+				t.Fatalf("response = %+v, want count %d", result, tt.wantCount)
+			}
+			if result.Scope != "project" {
+				t.Fatalf("scope = %q, want project", result.Scope)
+			}
+			if result.Sessions[0].AgentType != "native-test" {
+				t.Fatalf("agent_type = %q, want native-test", result.Sessions[0].AgentType)
+			}
+		})
+	}
+}
+
+func TestManagementAgentSessions_HistoryResponses(t *testing.T) {
+	tests := []struct {
+		name       string
+		agent      Agent
+		wantStatus int
+		wantCount  int
+	}{
+		{
+			name:       "unsupported",
+			agent:      &managementAgentSessionAgent{},
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name: "success",
+			agent: &managementAgentSessionHistoryAgent{
+				managementAgentSessionAgent: &managementAgentSessionAgent{},
+				history:                     []HistoryEntry{{Role: "user", Content: "hello", Timestamp: time.Unix(1, 0).UTC()}},
+			},
+			wantStatus: http.StatusOK,
+			wantCount:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ts, e := testManagementServer(t, "tok")
+			e.agent = tt.agent
+			status, response := managementRequest(t, http.MethodGet, ts.URL+"/api/v1/projects/test-project/agent-sessions/native-1/history?limit=10", "tok", nil)
+			if status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (error=%q)", status, tt.wantStatus, response.Error)
+			}
+			if tt.wantStatus != http.StatusOK {
+				if response.OK {
+					t.Fatal("error response has ok=true")
+				}
+				return
+			}
+
+			var data struct {
+				ID        string         `json:"id"`
+				AgentType string         `json:"agent_type"`
+				History   []HistoryEntry `json:"history"`
+				Count     int            `json:"count"`
+			}
+			if err := json.Unmarshal(response.Data, &data); err != nil {
+				t.Fatalf("decode history response: %v", err)
+			}
+			if data.ID != "native-1" || data.AgentType != "native-test" || data.Count != tt.wantCount || len(data.History) != tt.wantCount {
+				t.Fatalf("history response = %+v", data)
+			}
+		})
+	}
+}
+
+func TestManagementAgentSessions_GroupStatuses(t *testing.T) {
+	tests := []struct {
+		name       string
+		sessionID  string
+		body       map[string]string
+		platforms  []Platform
+		wantStatus int
+	}{
+		{
+			name:       "owner required",
+			sessionID:  "native-1",
+			body:       map[string]string{"name": "Native one"},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "session not found",
+			sessionID:  "missing",
+			body:       map[string]string{"owner_user_id": "owner-1", "name": "Missing"},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "group unsupported",
+			sessionID:  "native-1",
+			body:       map[string]string{"owner_user_id": "owner-1", "name": "Native one"},
+			wantStatus: http.StatusNotImplemented,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ts, e := testManagementServer(t, "tok")
+			e.agent = &managementAgentSessionAgent{sessions: []AgentSessionInfo{{ID: "native-1", ProjectPath: "/work/one"}}}
+			e.platforms = tt.platforms
+			status, response := managementRequest(t, http.MethodPost, ts.URL+"/api/v1/projects/test-project/agent-sessions/"+tt.sessionID+"/group", "tok", tt.body)
+			if status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (error=%q)", status, tt.wantStatus, response.Error)
+			}
+			if response.OK {
+				t.Fatal("error response has ok=true")
+			}
+		})
+	}
+
+	t.Run("created then idempotent", func(t *testing.T) {
+		_, ts, e := testManagementServer(t, "tok")
+		e.agent = &managementAgentSessionAgent{sessions: []AgentSessionInfo{{ID: "native-1", ProjectPath: "/work/one"}}}
+		platform := &managementAgentSessionGroupPlatform{chatID: "chat-1"}
+		e.platforms = []Platform{platform}
+		url := ts.URL + "/api/v1/projects/test-project/agent-sessions/native-1/group"
+		body := map[string]string{"owner_user_id": "owner-1", "name": "Native one"}
+
+		for index, want := range []struct {
+			status  int
+			created bool
+		}{{http.StatusCreated, true}, {http.StatusOK, false}} {
+			status, response := managementRequest(t, http.MethodPost, url, "tok", body)
+			if status != want.status {
+				t.Fatalf("request %d status = %d, want %d (error=%q)", index+1, status, want.status, response.Error)
+			}
+			var result AgentSessionGroupResult
+			if err := json.Unmarshal(response.Data, &result); err != nil {
+				t.Fatalf("decode group response: %v", err)
+			}
+			if !response.OK || result.Created != want.created || result.ChatID != "chat-1" {
+				t.Fatalf("request %d result = %+v", index+1, result)
+			}
+		}
+		if platform.createCalls != 1 {
+			t.Fatalf("CreateGroupChat calls = %d, want 1", platform.createCalls)
+		}
+	})
+}
+
+func TestManagementAgentSessions_MethodNotAllowed(t *testing.T) {
+	_, ts, _ := testManagementServer(t, "tok")
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "list", method: http.MethodPost, path: "/agent-sessions"},
+		{name: "history", method: http.MethodPost, path: "/agent-sessions/native-1/history"},
+		{name: "group", method: http.MethodGet, path: "/agent-sessions/native-1/group"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, response := managementRequest(t, tt.method, ts.URL+"/api/v1/projects/test-project"+tt.path, "tok", nil)
+			if status != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want %d (error=%q)", status, http.StatusMethodNotAllowed, response.Error)
+			}
+			if response.OK {
+				t.Fatal("method error response has ok=true")
+			}
+		})
 	}
 }
