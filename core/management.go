@@ -1011,6 +1011,11 @@ func (m *ManagementServer) handleProjectAgentSessionHistory(w http.ResponseWrite
 		return
 	}
 
+	// Always emit a JSON array: a nil slice marshals to null, which crashes
+	// clients that read .history.length on an agent with no stored history.
+	if history == nil {
+		history = []HistoryEntry{}
+	}
 	mgmtJSON(w, http.StatusOK, map[string]any{
 		"id":         sessionID,
 		"agent_type": e.agent.Name(),

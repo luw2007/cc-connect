@@ -3147,10 +3147,11 @@ func TestManagementAgentSessions_ListValidationAndResponse(t *testing.T) {
 
 func TestManagementAgentSessions_HistoryResponses(t *testing.T) {
 	tests := []struct {
-		name       string
-		agent      Agent
-		wantStatus int
-		wantCount  int
+		name           string
+		agent          Agent
+		wantStatus     int
+		wantCount      int
+		wantRawHistory string
 	}{
 		{
 			name:       "unsupported",
@@ -3165,6 +3166,18 @@ func TestManagementAgentSessions_HistoryResponses(t *testing.T) {
 			},
 			wantStatus: http.StatusOK,
 			wantCount:  1,
+		},
+		{
+			// A nil slice marshals to null and crashes clients that read
+			// .history.length; the handler must always emit a JSON array.
+			name: "empty history is an array not null",
+			agent: &managementAgentSessionHistoryAgent{
+				managementAgentSessionAgent: &managementAgentSessionAgent{},
+				history:                     nil,
+			},
+			wantStatus:     http.StatusOK,
+			wantCount:      0,
+			wantRawHistory: "[]",
 		},
 	}
 
@@ -3194,6 +3207,17 @@ func TestManagementAgentSessions_HistoryResponses(t *testing.T) {
 			}
 			if data.ID != "native-1" || data.AgentType != "native-test" || data.Count != tt.wantCount || len(data.History) != tt.wantCount {
 				t.Fatalf("history response = %+v", data)
+			}
+			if tt.wantRawHistory != "" {
+				var raw struct {
+					History json.RawMessage `json:"history"`
+				}
+				if err := json.Unmarshal(response.Data, &raw); err != nil {
+					t.Fatalf("decode raw history: %v", err)
+				}
+				if got := string(raw.History); got != tt.wantRawHistory {
+					t.Fatalf("raw history = %s, want %s", got, tt.wantRawHistory)
+				}
 			}
 		})
 	}
