@@ -11,6 +11,7 @@ import CronList from '@/pages/Cron/CronList';
 import SystemConfig from '@/pages/System/Config';
 import ProviderList from '@/pages/Providers/ProviderList';
 import SkillList from '@/pages/Skills/SkillList';
+import SessionList from '@/pages/Sessions/SessionList';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -32,6 +33,7 @@ export default function App() {
         <Route path="skills" element={<SkillList />} />
         <Route path="chat" element={<ChatList />} />
         <Route path="chat/:name" element={<ChatView />} />
+        <Route path="sessions" element={<SessionList />} />
         <Route path="cron" element={<CronList />} />
         <Route path="system" element={<SystemConfig />} />
       </Route>
