@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -307,8 +308,8 @@ func parseAgentArgs(args []string) (agentCommand, error) {
 			return command, fmt.Errorf("%s requires a nonblank value", source.name)
 		}
 	}
-	if command.backend != "" && command.backend != "cmux" && command.backend != "herdr" {
-		return command, fmt.Errorf("--backend must be cmux or herdr")
+	if command.backend != "" && !slices.Contains(core.ListRegisteredAgentControllers(), command.backend) {
+		return command, fmt.Errorf("--backend must be one of: %s", strings.Join(core.ListRegisteredAgentControllers(), ", "))
 	}
 	if choiceSet {
 		if strings.TrimSpace(choice) == "" {
@@ -716,11 +717,11 @@ func abbreviateAgentRevision(revision string) string {
 }
 
 func printAgentUsage(writer io.Writer) {
-	fmt.Fprint(writer, `Usage: cc-connect agent <command> [options]
+	backends := strings.Join(core.ListRegisteredAgentControllers(), "|")
+	fmt.Fprintf(writer, `Usage: cc-connect agent <command> [options]
 
 Control existing agent targets without creating workspaces, panes, or agents.
-Use --backend cmux|herdr directly, or select an exact project from config.
-
+Use --backend %s directly, or select an exact project from config.
 Commands:
   list      List existing targets and their current capabilities
   tail      Read recent target output
@@ -730,7 +731,7 @@ Commands:
   answer    Answer one or more indexed questions
 
 Selection options:
-  --backend cmux|herdr  Direct backend, or assertion for a selected project
+  --backend BACKEND     Direct backend, or assertion for a selected project
   --project NAME        Exact project name from config
   --config PATH         Config path; without --project it must contain one project
   --socket PATH         Override socket_path without printing other options
@@ -761,5 +762,5 @@ Safe flow:
 
 For cmux mutations, first inspect a request with requests --json, then use
 approve or answer with the exact target and request revisions.
-`)
+`, backends)
 }

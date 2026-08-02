@@ -221,6 +221,7 @@ func TestHerdrControllerListUsesOnlyAgentListAndAdvertisesActualCapabilities(t *
 		ID:        "alpha",
 		Backend:   "herdr",
 		Kind:      "claude",
+		Title:     "alpha",
 		Directory: "/repo/alpha",
 		Status:    "blocked",
 		Capabilities: []core.AgentControlCapability{
@@ -232,6 +233,7 @@ func TestHerdrControllerListUsesOnlyAgentListAndAdvertisesActualCapabilities(t *
 		ID:        "beta",
 		Backend:   "herdr",
 		Kind:      "unknown",
+		Title:     "beta",
 		Directory: "/repo/beta",
 		Status:    "idle",
 		Capabilities: []core.AgentControlCapability{

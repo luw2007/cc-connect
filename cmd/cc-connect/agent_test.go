@@ -149,6 +149,16 @@ func TestParseAgentArgsTailLines(t *testing.T) {
 	}
 }
 
+func TestParseAgentArgsAllowsOrcaBackend(t *testing.T) {
+	command, err := parseAgentArgs([]string{"list", "--backend", "orca", "--json"})
+	if err != nil {
+		t.Fatalf("parseAgentArgs: %v", err)
+	}
+	if command.backend != "orca" {
+		t.Fatalf("backend = %q", command.backend)
+	}
+}
+
 func TestParseAgentArgsBuildsIndexedAnswers(t *testing.T) {
 	command, err := parseAgentArgs([]string{
 		"answer", "--backend", "herdr", "--id", "worker", "--revision", "target-rev",

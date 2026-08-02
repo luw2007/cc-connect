@@ -507,6 +507,8 @@ func main() {
 		engine.SetProjectStateStore(projectState)
 		engine.SetDataDir(cfg.DataDir)
 
+		engine.SetAgentControllers(buildExternalAgentControllers(proj.Name, proj.ExternalAgentBackends))
+
 		if proj.Notes != nil && proj.Notes.Enabled {
 			notesCfg := core.NotesConfig{
 				Enabled:                 proj.Notes.Enabled,
@@ -2121,6 +2123,29 @@ func buildAgentOptions(dataDir string, proj config.ProjectConfig) map[string]any
 	opts["cc_data_dir"] = dataDir
 	opts["cc_project"] = proj.Name
 	return opts
+}
+
+// buildExternalAgentControllers resolves the external agent controllers a
+// project exposes through /agents and the per-backend commands. A nil
+// selection means every controller compiled into this binary, so a fresh
+// install can inspect cmux/herdr/orca without extra config; an explicit empty
+// list is a deliberate opt-out. A controller whose backing CLI or socket is
+// missing is skipped, never fatal.
+func buildExternalAgentControllers(project string, selection *[]string) map[string]core.AgentController {
+	backends := core.ListRegisteredAgentControllers()
+	if selection != nil {
+		backends = *selection
+	}
+	controllers := make(map[string]core.AgentController, len(backends))
+	for _, backend := range backends {
+		controller, err := core.CreateAgentController(backend, nil)
+		if err != nil {
+			slog.Debug("external agent controller unavailable", "project", project, "backend", backend, "error", err)
+			continue
+		}
+		controllers[backend] = controller
+	}
+	return controllers
 }
 
 func wireAgentProviders(agent core.Agent, agentCfg config.AgentConfig) providerWiringResult {

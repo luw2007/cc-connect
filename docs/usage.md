@@ -5,6 +5,7 @@ Complete guide to using cc-connect features.
 ## Table of Contents
 
 - [Session Management](#session-management)
+- [External Agent Control](#external-agent-control)
 - [Permission Modes](#permission-modes)
 - [API Provider Management](#api-provider-management)
 - [Model Selection](#model-selection)
@@ -67,6 +68,65 @@ To restore the previous behavior of always continuing, set `reset_on_idle_mins =
 ### Model switch preserves history
 
 `/model` preserves the current session — the agent resumes the conversation with the new model (no extra token cost). Model switching affects the shared agent instance — if multiple platforms use the same project, the model change applies to all of them.
+
+---
+
+## External Agent Control
+
+Coding agents you started elsewhere — in Orca terminals, cmux workspaces, or
+herdr panes — can be inspected and driven from chat. cc-connect never creates
+those agents; it only discovers and talks to the ones already running.
+
+| Command | Description |
+|---------|-------------|
+| `/agents` | List the external tools this project can reach |
+| `/<backend>` | List that tool's live agents, numbered (`/orca`, `/cmux`, `/herdr`) |
+| `/<backend> show <n>` | Show one agent's window title, kind, status, and recent output |
+| `/<backend> send <n> <message>` | Forward one message to that exact agent |
+| `/<backend> group <n>` | Create a dedicated group chat bound to that agent |
+
+`<n>` is the number from the listing; a unique ID prefix or the exact window
+title works too. An ambiguous selector is rejected rather than guessed. A number
+is resolved against the listing **as it is now**, so if agents came or went
+since you last ran `/orca`, refresh before acting on a number — every reply
+names the agent it acted on, and the listing's own buttons carry an exact
+target reference instead of a number.
+
+> **These commands are privileged.** They read live terminal output and can type
+> into a terminal on the host, so they require `admin_from` authorization just
+> like `/shell`, and an operator can turn the whole console off with
+> `disabled_cmds = ["agents"]`.
+
+After `/<backend> group <n>`, every ordinary message you type in the new group
+is forwarded to that agent, and cc-connect replies with its latest output. The
+local project agent never sees those messages, in single- and multi-workspace
+mode alike. Inside the group:
+
+- cc-connect commands still run locally, so `/orca 2` inspects another agent
+  without leaving the group.
+- Any other slash command is forwarded verbatim, so the agent's own commands
+  (for example `/review`) reach its CLI.
+- Images and files are refused with a note, since a terminal cannot accept them.
+
+A group binds to the agent's stable ID, so it keeps working when the backend
+reshuffles its internal handles. If the agent disappears, the group reports the
+failure instead of silently rerouting the message.
+
+Which tools are reachable depends on what is installed and what the project
+allows:
+
+```toml
+[[projects]]
+name = "demo"
+# Omit the key to expose every controller compiled into the binary.
+# external_agent_backends = ["orca", "cmux", "herdr"]
+# external_agent_backends = []   # disable the console for this project
+```
+
+Capabilities differ per backend and per target, and each card lists what the
+selected agent actually supports. Orca terminals expose output reading and
+prompt forwarding; cmux exposes its structured approval and question actions;
+external herdr agents remain read-only.
 
 ---
 

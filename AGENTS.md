@@ -25,8 +25,8 @@ CC-Connect is a bridge that connects AI coding agents (Claude Code, Codex, Gemin
 │  ├── acp/            │  ├── qq/                 │
 │  ├── cmux/           │  ├── qqbot/              │
 │  ├── herdr/          │  ├── line/               │
-│  └── qoder/          │  ├── weibo/              │
-│                      │  └── cloud-web/          │
+│  ├── orca/           │  ├── weibo/              │
+│  └── qoder/          │  └── cloud-web/          │
 ├──────────────────────┴──────────────────────────┤
 │                     daemon/                     │  ← systemd/launchd service
 └─────────────────────────────────────────────────┘
@@ -242,7 +242,7 @@ go build -tags 'no_discord no_dingtalk no_qq no_qqbot no_line' ./cmd/cc-connect
 ```
 
 Available tags: `no_acp`, `no_claudecode`, `no_codex`, `no_copilot`, `no_cursor`, `no_gemini`,
-`no_iflow`, `no_opencode`, `no_qoder`, `no_feishu`, `no_telegram`,
+`no_iflow`, `no_opencode`, `no_orca`, `no_qoder`, `no_feishu`, `no_telegram`,
 `no_discord`, `no_slack`, `no_dingtalk`, `no_wecom`, `no_weixin`, `no_qq`, `no_qqbot`,
 `no_line`, `no_weibo`, `no_tuitui`.
 

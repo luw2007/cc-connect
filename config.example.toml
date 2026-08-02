@@ -768,6 +768,16 @@ level = "info" # debug, info, warn, error
 #                                  # 启用周期性扫描（默认 false）
 # auto_group_interval_ms = 15000  # Sweep interval in ms (default 15000; floor 5000)
 #                                  # 扫描间隔，毫秒（默认 15000；下限 5000）
+#
+# external_agent_backends = ["cmux", "herdr", "orca"]
+# Selects which external agent controllers back /agents and the per-backend
+# commands (/cmux, /herdr, /orca). Omit the key to expose every controller
+# compiled into the binary; set an empty list to disable the console entirely.
+# These commands read live terminal output and can type into a local terminal,
+# so they require admin_from authorization and honour disabled_cmds = ["agents"].
+# Orca targets expose output and prompt continuation, so they can also get a
+# dedicated group chat via `/orca group <n>`; cmux exposes its structured
+# approval/question actions; external Herdr targets remain read-only.
 
 # =============================================================================
 # Project 1 / 项目 1

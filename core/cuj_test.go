@@ -3162,3 +3162,186 @@ func TestCUJ_WSGROUP1_AutoGroupPerWorkspace(t *testing.T) {
 		t.Fatalf("session 1 must not receive session 2's message, got %v", got)
 	}
 }
+
+// CUJ-EXTAGENT1 · A user discovers externally owned agents from chat, opens one tool's
+// list, creates a dedicated group for one exact agent, and then talks to that
+// agent by typing in the new group. The local agent must never see those
+// messages, and cc-connect commands must keep working inside the bound group.
+func TestCUJ_EXTAGENT1_ListGroupAndForward(t *testing.T) {
+	dir := t.TempDir()
+	platform := &cujManualGroupPlatform{
+		stubPlatformEngine: &stubPlatformEngine{n: "feishu"},
+		chatID:             "chat-orca",
+	}
+	agent := &cujAgent{}
+	controller := &externalTestController{
+		targets: []AgentControlTarget{
+			{
+				ID: "wt-1/term-a", Revision: "rev-a", Backend: "orca", Kind: "codex",
+				Title: "sol worker", Directory: "/repo", Status: "working",
+				Capabilities: []AgentControlCapability{AgentControlCapabilityTail, AgentControlCapabilityPrompt},
+			},
+			{
+				ID: "wt-2/term-b", Revision: "rev-b", Backend: "orca", Kind: "claude",
+				Title: "luna scout", Directory: "/other", Status: "idle",
+				Capabilities: []AgentControlCapability{AgentControlCapabilityTail, AgentControlCapabilityPrompt},
+			},
+		},
+		tail: "waiting for input",
+	}
+	e := NewEngine("project-a", agent, []Platform{platform}, dir+"/sessions.json", LangEnglish)
+	e.SetDataDir(dir)
+	// The console is privileged: without an admin the journey is a 403 wall.
+	e.SetAdminFrom("user-1")
+	e.SetAgentControllers(map[string]AgentController{"orca": controller})
+
+	send := func(sessionKey, channelKey, messageID, content string) {
+		t.Helper()
+		e.ReceiveMessage(platform, &Message{
+			SessionKey: sessionKey,
+			Platform:   "feishu",
+			ChannelKey: channelKey,
+			MessageID:  messageID,
+			UserID:     "user-1",
+			UserName:   "user-1",
+			Content:    content,
+			ReplyCtx:   "ctx-" + messageID,
+		})
+	}
+	lastSent := func() string {
+		t.Helper()
+		sent := platform.getSent()
+		if len(sent) == 0 {
+			t.Fatal("platform received nothing")
+		}
+		return sent[len(sent)-1]
+	}
+
+	const consoleKey = "feishu:chat-console:user-1"
+
+	// Action 1: the user asks which external tools exist.
+	send(consoleKey, "chat-console", "m1", "/agents")
+	if got := lastSent(); !strings.Contains(got, "Orca Agents") {
+		t.Fatalf("/agents reply = %q, want the Orca tool listed", got)
+	}
+
+	// Action 2: the user opens Orca's list and can tell the two agents apart.
+	send(consoleKey, "chat-console", "m2", "/orca")
+	listed := lastSent()
+	for _, want := range []string{"sol worker", "luna scout", "codex", "claude", "working", "idle"} {
+		if !strings.Contains(listed, want) {
+			t.Fatalf("/orca reply missing %q:\n%s", want, listed)
+		}
+	}
+
+	// Action 3: the user creates a dedicated group for agent #1 only.
+	send(consoleKey, "chat-console", "m3", "/orca group 1")
+	if platform.createCalls != 1 {
+		t.Fatalf("CreateGroupChat calls = %d, want exactly 1", platform.createCalls)
+	}
+	if got := lastSent(); !strings.Contains(got, e.i18n.T(MsgExternalAgentGroupCreated)) {
+		t.Fatalf("group reply = %q", got)
+	}
+
+	// Action 4: a plain message in the new group reaches the external agent.
+	const groupKey = "feishu:chat-orca:user-1"
+	send(groupKey, "chat-orca", "m4", "rebase onto master please")
+	if controller.sent != "rebase onto master please" {
+		t.Fatalf("external agent received %q, want the group message", controller.sent)
+	}
+	if controller.sentRef.ID != "wt-1/term-a" {
+		t.Fatalf("message went to %q, want the agent the group was created for", controller.sentRef.ID)
+	}
+	if got := lastSent(); !strings.Contains(got, e.i18n.T(MsgExternalAgentPromptSent)) {
+		t.Fatalf("forward reply = %q", got)
+	}
+
+	// The local agent must never have been started for the bound group.
+	agent.mu.Lock()
+	localSessions := len(agent.sessions)
+	agent.mu.Unlock()
+	if localSessions != 0 {
+		t.Fatalf("local agent sessions = %d, want 0: the bound group leaked to the local agent", localSessions)
+	}
+
+	// Action 5: cc-connect commands still work inside the bound group.
+	send(groupKey, "chat-orca", "m5", "/orca 2")
+	if got := lastSent(); !strings.Contains(got, "luna scout") {
+		t.Fatalf("/orca 2 inside the bound group = %q", got)
+	}
+	if controller.sent != "rebase onto master please" {
+		t.Fatalf("a command inside the bound group was forwarded as a prompt: %q", controller.sent)
+	}
+}
+
+// CUJ-EXTAGENT2 · The same bound-group journey in multi-workspace mode. An
+// external group has no workspace binding, so if it were resolved after
+// workspace selection the unbound-workspace init flow would swallow every
+// message and the group would never forward anything.
+func TestCUJ_EXTAGENT2_BoundGroupForwardsInMultiWorkspaceMode(t *testing.T) {
+	dir := t.TempDir()
+	platform := &cujManualGroupPlatform{
+		stubPlatformEngine: &stubPlatformEngine{n: "feishu"},
+		chatID:             "chat-orca",
+	}
+	agent := &cujAgent{}
+	target := AgentControlTarget{
+		ID: "wt-1/term-a", Revision: "rev-a", Backend: "orca", Kind: "codex",
+		Title: "sol worker", Directory: "/repo", Status: "working",
+		Capabilities: []AgentControlCapability{AgentControlCapabilityTail, AgentControlCapabilityPrompt},
+	}
+	controller := &externalTestController{targets: []AgentControlTarget{target}, tail: "waiting"}
+
+	e := NewEngine("project-a", agent, []Platform{platform}, dir+"/sessions.json", LangEnglish)
+	e.SetDataDir(dir)
+	e.SetAdminFrom("user-1")
+	e.SetMultiWorkspace(dir, dir+"/bindings.json")
+	e.SetAgentControllers(map[string]AgentController{"orca": controller})
+
+	// Action 1: create the group for one exact agent.
+	if _, err := e.CreateExternalAgentGroup(context.Background(), target, "user-1", ""); err != nil {
+		t.Fatalf("CreateExternalAgentGroup() error = %v", err)
+	}
+
+	send := func(content string) {
+		e.ReceiveMessage(platform, &Message{
+			SessionKey: "feishu:chat-orca:user-1",
+			Platform:   "feishu",
+			ChannelKey: "chat-orca",
+			MessageID:  content,
+			UserID:     "user-1",
+			Content:    content,
+			ReplyCtx:   "ctx",
+		})
+	}
+
+	// Action 2: an ordinary message must reach the agent, not the workspace
+	// init flow.
+	send("rebase onto master please")
+	if controller.sent != "rebase onto master please" {
+		t.Fatalf("external agent received %q; the workspace init flow swallowed the message", controller.sent)
+	}
+
+	// Action 3: an unrecognized slash command belongs to the agent's own CLI,
+	// not to cc-connect and not to the local agent.
+	send("/review the diff")
+	if controller.sent != "/review the diff" {
+		t.Fatalf("agent-side slash command was not forwarded, got %q", controller.sent)
+	}
+
+	// A cc-connect command still runs locally inside the bound group.
+	send("/orca")
+	if controller.sent != "/review the diff" {
+		t.Fatalf("a cc-connect command was forwarded as a prompt: %q", controller.sent)
+	}
+	if got := strings.Join(platform.getSent(), "\n"); !strings.Contains(got, "sol worker") {
+		t.Fatalf("/orca did not render the listing inside the bound group: %s", got)
+	}
+
+	agent.mu.Lock()
+	localSessions := len(agent.sessions)
+	agent.mu.Unlock()
+	if localSessions != 0 {
+		t.Fatalf("local agent sessions = %d, want 0: the bound group leaked to the local agent", localSessions)
+	}
+}

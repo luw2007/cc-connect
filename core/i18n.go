@@ -704,6 +704,28 @@ const (
 	MsgGroupDissolved   MsgKey = "group_dissolved"
 	MsgGroupDissolveBtn MsgKey = "group_dissolve_btn"
 
+	// External agent control
+	MsgExternalAgentsTitle        MsgKey = "external_agents_title"
+	MsgExternalAgentsNone         MsgKey = "external_agents_none"
+	MsgExternalAgentsPick         MsgKey = "external_agents_pick"
+	MsgExternalBackendUnavailable MsgKey = "external_backend_unavailable"
+	MsgExternalBackendEmpty       MsgKey = "external_backend_empty"
+	MsgExternalBackendCommandDesc MsgKey = "external_backend_command_desc"
+	MsgExternalAgentUsage         MsgKey = "external_agent_usage"
+	MsgExternalAgentNotFound      MsgKey = "external_agent_not_found"
+	MsgExternalAgentActionFailed  MsgKey = "external_agent_action_failed"
+	MsgExternalAgentPromptSent    MsgKey = "external_agent_prompt_sent"
+	MsgExternalAgentGroupCreated  MsgKey = "external_agent_group_created"
+	MsgExternalAgentGroupExists   MsgKey = "external_agent_group_exists"
+	MsgExternalAgentGroupHint     MsgKey = "external_agent_group_hint"
+	MsgExternalAgentCapabilities  MsgKey = "external_agent_capabilities"
+	MsgExternalAgentViewBtn       MsgKey = "external_agent_view_btn"
+	MsgExternalAgentGroupBtn      MsgKey = "external_agent_group_btn"
+	MsgExternalAgentRefreshBtn    MsgKey = "external_agent_refresh_btn"
+	MsgExternalAgentBackBtn       MsgKey = "external_agent_back_btn"
+	MsgExternalAgentAllToolsBtn   MsgKey = "external_agent_all_tools_btn"
+	MsgExternalAgentTextOnly      MsgKey = "external_agent_text_only"
+
 	// Watch card: bind-groups button (auto-group on-demand sweep)
 	MsgWatchBindBtn     MsgKey = "watch_bind_btn"
 	MsgGroupDissolveErr MsgKey = "group_dissolve_err"
@@ -4596,6 +4618,146 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "解散",
 		LangJapanese:           "解散",
 		LangSpanish:            "Disolver",
+	},
+	MsgExternalAgentsTitle: {
+		LangEnglish:            "Agent Control",
+		LangChinese:            "Agent 控制",
+		LangTraditionalChinese: "Agent 控制",
+		LangJapanese:           "エージェント操作",
+		LangSpanish:            "Control de agentes",
+	},
+	MsgExternalAgentsNone: {
+		LangEnglish:            "No external agent controllers are available.",
+		LangChinese:            "没有可用的外部 Agent 控制器。",
+		LangTraditionalChinese: "沒有可用的外部 Agent 控制器。",
+		LangJapanese:           "利用可能な外部エージェントコントローラがありません。",
+		LangSpanish:            "No hay controladores de agentes externos disponibles.",
+	},
+	MsgExternalAgentsPick: {
+		LangEnglish:            "Select a tool to view its agents.",
+		LangChinese:            "选择一个工具以查看其 Agent。",
+		LangTraditionalChinese: "選擇一個工具以查看其 Agent。",
+		LangJapanese:           "ツールを選択すると、そのエージェントを表示できます。",
+		LangSpanish:            "Selecciona una herramienta para ver sus agentes.",
+	},
+	MsgExternalBackendUnavailable: {
+		LangEnglish:            "Agents unavailable: %s",
+		LangChinese:            "Agent 不可用：%s",
+		LangTraditionalChinese: "Agent 不可用：%s",
+		LangJapanese:           "エージェントは利用できません：%s",
+		LangSpanish:            "Agentes no disponibles: %s",
+	},
+	MsgExternalBackendEmpty: {
+		LangEnglish:            "No active agents found.",
+		LangChinese:            "未找到活动的 Agent。",
+		LangTraditionalChinese: "未找到活動中的 Agent。",
+		LangJapanese:           "アクティブなエージェントが見つかりません。",
+		LangSpanish:            "No se encontraron agentes activos.",
+	},
+	MsgExternalBackendCommandDesc: {
+		LangEnglish:            "Browse and control %s",
+		LangChinese:            "浏览并控制 %s",
+		LangTraditionalChinese: "瀏覽並控制 %s",
+		LangJapanese:           "%s を閲覧・操作",
+		LangSpanish:            "Explorar y controlar %s",
+	},
+	MsgExternalAgentUsage: {
+		LangEnglish:            "Usage: `/%s` · `/%s show <n>` · `/%s send <n> <message>` · `/%s group <n>`",
+		LangChinese:            "用法：`/%s` · `/%s show <n>` · `/%s send <n> <消息>` · `/%s group <n>`",
+		LangTraditionalChinese: "用法：`/%s` · `/%s show <n>` · `/%s send <n> <訊息>` · `/%s group <n>`",
+		LangJapanese:           "使い方：`/%s` · `/%s show <n>` · `/%s send <n> <メッセージ>` · `/%s group <n>`",
+		LangSpanish:            "Uso: `/%s` · `/%s show <n>` · `/%s send <n> <mensaje>` · `/%s group <n>`",
+	},
+	MsgExternalAgentNotFound: {
+		LangEnglish:            "Agent `%s` not found. Run `/%s` for the current list.",
+		LangChinese:            "未找到 Agent `%s`。运行 `/%s` 查看当前列表。",
+		LangTraditionalChinese: "未找到 Agent `%s`。執行 `/%s` 查看目前列表。",
+		LangJapanese:           "エージェント `%s` が見つかりません。現在のリストは `/%s` を実行してください。",
+		LangSpanish:            "No se encontró el agente `%s`. Ejecuta `/%s` para ver la lista actual.",
+	},
+	MsgExternalAgentActionFailed: {
+		LangEnglish:            "Action failed: %s",
+		LangChinese:            "操作失败：%s",
+		LangTraditionalChinese: "操作失敗：%s",
+		LangJapanese:           "操作に失敗しました：%s",
+		LangSpanish:            "Error en la acción: %s",
+	},
+	MsgExternalAgentPromptSent: {
+		LangEnglish:            "Message delivered to the agent.",
+		LangChinese:            "消息已送达该 Agent。",
+		LangTraditionalChinese: "訊息已送達該 Agent。",
+		LangJapanese:           "エージェントにメッセージを配信しました。",
+		LangSpanish:            "Mensaje entregado al agente.",
+	},
+	MsgExternalAgentGroupCreated: {
+		LangEnglish:            "Group created. Every message there goes straight to this agent.",
+		LangChinese:            "群组已创建。其中的每条消息都会直接发送给该 Agent。",
+		LangTraditionalChinese: "群組已建立。其中的每則訊息都會直接傳送給該 Agent。",
+		LangJapanese:           "グループを作成しました。以降のメッセージはすべてこのエージェントに直接送信されます。",
+		LangSpanish:            "Grupo creado. Cada mensaje allí va directo a este agente.",
+	},
+	MsgExternalAgentGroupExists: {
+		LangEnglish:            "This agent already has a group.",
+		LangChinese:            "该 Agent 已有群组。",
+		LangTraditionalChinese: "該 Agent 已有群組。",
+		LangJapanese:           "このエージェントにはすでにグループがあります。",
+		LangSpanish:            "Este agente ya tiene un grupo.",
+	},
+	MsgExternalAgentGroupHint: {
+		LangEnglish:            "This group is bound to an external agent. Send a message to forward it; use `/%s` to inspect other agents.",
+		LangChinese:            "此群组绑定了一个外部 Agent。发送消息即可转发；使用 `/%s` 查看其他 Agent。",
+		LangTraditionalChinese: "此群組綁定了一個外部 Agent。傳送訊息即可轉發；使用 `/%s` 查看其他 Agent。",
+		LangJapanese:           "このグループは外部エージェントにバインドされています。メッセージを送信すると転送されます。他のエージェントは `/%s` で確認できます。",
+		LangSpanish:            "Este grupo está vinculado a un agente externo. Envía un mensaje para reenviarlo; usa `/%s` para inspeccionar otros agentes.",
+	},
+	MsgExternalAgentCapabilities: {
+		LangEnglish:            "Capabilities: %s",
+		LangChinese:            "能力：%s",
+		LangTraditionalChinese: "能力：%s",
+		LangJapanese:           "機能：%s",
+		LangSpanish:            "Capacidades: %s",
+	},
+	MsgExternalAgentViewBtn: {
+		LangEnglish:            "View",
+		LangChinese:            "查看",
+		LangTraditionalChinese: "查看",
+		LangJapanese:           "表示",
+		LangSpanish:            "Ver",
+	},
+	MsgExternalAgentGroupBtn: {
+		LangEnglish:            "Create Group",
+		LangChinese:            "创建群组",
+		LangTraditionalChinese: "建立群組",
+		LangJapanese:           "グループ作成",
+		LangSpanish:            "Crear grupo",
+	},
+	MsgExternalAgentRefreshBtn: {
+		LangEnglish:            "Refresh",
+		LangChinese:            "刷新",
+		LangTraditionalChinese: "重新整理",
+		LangJapanese:           "更新",
+		LangSpanish:            "Actualizar",
+	},
+	MsgExternalAgentBackBtn: {
+		LangEnglish:            "Back",
+		LangChinese:            "返回",
+		LangTraditionalChinese: "返回",
+		LangJapanese:           "戻る",
+		LangSpanish:            "Atrás",
+	},
+	MsgExternalAgentAllToolsBtn: {
+		LangEnglish:            "All Tools",
+		LangChinese:            "全部工具",
+		LangTraditionalChinese: "全部工具",
+		LangJapanese:           "すべてのツール",
+		LangSpanish:            "Todas las herramientas",
+	},
+	MsgExternalAgentTextOnly: {
+		LangEnglish:            "This group forwards text only to `%s`.",
+		LangChinese:            "本群只能向 `%s` 转发文本消息。",
+		LangTraditionalChinese: "本群只能向 `%s` 轉發文字訊息。",
+		LangJapanese:           "このグループは `%s` へテキストのみ転送します。",
+		LangSpanish:            "Este grupo solo reenvía texto a `%s`.",
 	},
 	MsgWatchBindBtn: {
 		LangEnglish:            "🔗 Bind unbound groups",

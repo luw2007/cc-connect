@@ -187,6 +187,7 @@ func herdrControlTarget(controller core.AgentController, agent agentInfo) (core.
 		Revision:     targetRevision(agent),
 		Backend:      "herdr",
 		Kind:         kind,
+		Title:        agent.Name,
 		Directory:    agent.CWD,
 		Status:       agent.AgentStatus,
 		Capabilities: capabilities,

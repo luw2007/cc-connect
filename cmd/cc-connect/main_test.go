@@ -473,3 +473,30 @@ func TestRunTopLevelCommandUnknown(t *testing.T) {
 		t.Fatal("runTopLevelCommand() handled unknown command")
 	}
 }
+
+// A project that never mentions external_agent_backends must still reach every
+// controller compiled into this binary -- the reported symptom was `/cmux`
+// falling through to the agent because the console was opt-in by config.
+func TestBuildExternalAgentControllersDefaultsToEveryRegisteredBackend(t *testing.T) {
+	registered := core.ListRegisteredAgentControllers()
+	if len(registered) == 0 {
+		t.Skip("binary was built without any agent controller")
+	}
+
+	omitted := buildExternalAgentControllers("demo", nil)
+	for backend := range omitted {
+		if !slices.Contains(registered, backend) {
+			t.Fatalf("controller %q is not a registered backend: %v", backend, registered)
+		}
+	}
+
+	// An explicit empty list is a deliberate opt-out, never "use the default".
+	if disabled := buildExternalAgentControllers("demo", &[]string{}); len(disabled) != 0 {
+		t.Fatalf("empty selection produced %d controllers, want 0", len(disabled))
+	}
+
+	// An unknown backend is skipped instead of aborting startup.
+	if unknown := buildExternalAgentControllers("demo", &[]string{"definitely-not-a-backend"}); len(unknown) != 0 {
+		t.Fatalf("unknown selection produced %d controllers, want 0", len(unknown))
+	}
+}

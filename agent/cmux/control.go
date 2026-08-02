@@ -10,6 +10,7 @@ import (
 	"hash"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -241,12 +242,16 @@ func (c *Controller) listTargetStates(ctx context.Context) ([]controlTargetState
 			Revision:  controlHash("cmux-target-v2", workspace.ID, surfaceID, workspace.CWD, hook.Source, hook.WorkstreamID, hook.SurfaceID, hook.Lifecycle),
 			Backend:   "cmux",
 			Kind:      kind,
+			Title:     workspace.stableName(),
 			Directory: workspace.CWD,
 			Status:    hook.Lifecycle,
 		}
 		target.Capabilities = core.AgentControlSupportedCapabilities(c, candidates...)
 		states = append(states, controlTargetState{target: target, surfaceID: surfaceID, workstreamID: hook.WorkstreamID})
 	}
+	// Deterministic order keeps the chat listing's numbering stable between
+	// two refreshes that see the same workspaces.
+	sort.Slice(states, func(i, j int) bool { return states[i].target.ID < states[j].target.ID })
 	return states, nil
 }
 

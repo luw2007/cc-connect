@@ -384,7 +384,16 @@ type Engine struct {
 	commands *CommandRegistry
 	skills   *SkillRegistry
 	aliases  map[string]string // trigger → command (e.g. "帮助" → "/help")
-	aliasMu  sync.RWMutex
+
+	// agentControllers expose externally owned agent targets for explicit
+	// inspection and capability-gated control; they never create targets.
+	agentControllers   map[string]AgentController
+	agentControllersMu sync.RWMutex
+	// agentBindingsMu guards the workspaceBindings pointer itself against the
+	// lazy construction in ensureAgentSessionBindings, which can otherwise
+	// race a concurrent read from the message path.
+	agentBindingsMu sync.RWMutex
+	aliasMu         sync.RWMutex
 
 	aliasSaveAddFunc func(name, command string) error
 	aliasSaveDelFunc func(name string) error
@@ -792,6 +801,7 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		interactiveStates:     make(map[string]*interactiveState),
 		sendWorkDirs:          make(map[string]string),
 		watchStates:           make(map[string]*watchState),
+		agentControllers:      make(map[string]AgentController),
 		controlCardMsgIDs:     make(map[string]string),
 		groupSeqs:             make(map[string]int),
 		externalPermissions:   make(map[string]*externalPendingPermission),
@@ -830,7 +840,9 @@ const DefaultWorkspaceIdleTimeout = 15 * time.Minute
 func (e *Engine) SetMultiWorkspace(baseDir, bindingStorePath string) {
 	e.multiWorkspace = true
 	e.baseDir = baseDir
+	e.agentBindingsMu.Lock()
 	e.workspaceBindings = NewWorkspaceBindingManager(bindingStorePath)
+	e.agentBindingsMu.Unlock()
 	e.workspacePool = newWorkspacePool(DefaultWorkspaceIdleTimeout)
 	e.initFlows = make(map[string]*workspaceInitFlow)
 	go e.runIdleReaper()
@@ -1545,6 +1557,9 @@ var privilegedCommands = map[string]bool{
 	"upgrade": true,
 	"web":     true,
 	"diff":    true,
+	// The external agent console reads live terminal output and can type into
+	// a local terminal, so it is at least as powerful as /shell.
+	"agents": true,
 }
 
 // isPrivilegedCommandInvocation extends the privilegedCommands map to
@@ -3297,6 +3312,20 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgBannedWordBlocked))
 			return
 		}
+	}
+
+	// A chat bound to an externally owned agent is not a local session, so it
+	// is resolved before workspace selection: in multi-workspace mode the
+	// unbound-workspace init flow would otherwise swallow the message and the
+	// group would never forward anything.
+	if e.isExternalAgentGroup(msg) {
+		if len(msg.Images) == 0 && strings.HasPrefix(content, "/") && e.isOwnCommand(content) {
+			if e.handleCommand(p, msg, content) {
+				return
+			}
+		}
+		e.forwardExternalAgentGroupMessage(p, msg, content)
+		return
 	}
 
 	// Multi-workspace resolution
@@ -7050,6 +7079,7 @@ var builtinCommands = []struct {
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
 	{[]string{"watch", "monitor"}, "watch"},
+	{[]string{"agents", "agent"}, "agents"},
 	{[]string{"export"}, "export"},
 	{[]string{"notes", "note", "memory", "memories"}, "notes"},
 	{[]string{"attach"}, "attach"},
@@ -7176,6 +7206,25 @@ func splitCommandArgs(s string) []string {
 		tokens = append(tokens, cur.String())
 	}
 	return tokens
+}
+
+// isOwnCommand reports whether cc-connect itself would handle this slash
+// command, without executing it or notifying the user. A chat bound to an
+// external agent uses it to choose between running a cc-connect command and
+// forwarding the text on, because the agent's own CLI has slash commands too.
+func (e *Engine) isOwnCommand(raw string) bool {
+	parts := splitCommandArgs(raw)
+	if len(parts) == 0 {
+		return false
+	}
+	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+	if matchPrefix(cmd, builtinCommands) != "" || e.hasExternalController(cmd) {
+		return true
+	}
+	if _, ok := e.commands.Resolve(cmd); ok {
+		return true
+	}
+	return e.skills.Resolve(cmd) != nil
 }
 
 func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
@@ -7320,6 +7369,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdPs(p, msg, args)
 	case "watch":
 		e.cmdWatch(p, msg, args)
+	case "agents":
+		e.cmdExternalAgents(p, msg)
 	case "export":
 		e.cmdExport(p, msg, args)
 	case "notes":
@@ -7347,6 +7398,33 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 	case "esc":
 		e.injectKeyForSession(msg.SessionKey, "Escape")
 	default:
+		// An external controller owns its own command name, so the backend
+		// list stays in the registry instead of being hardcoded here. These
+		// commands bypass the checks above because they carry no builtin
+		// cmdID, so they repeat the disabled and admin gates explicitly under
+		// the shared "agents" id: they read live terminal output and can type
+		// into a local terminal.
+		if e.hasExternalController(cmd) {
+			if disabledCmds["agents"] || disabledCmds[cmd] {
+				slog.Info("audit: command_blocked",
+					"user_id", msg.UserID, "platform", msg.Platform,
+					"project", e.name, "command", cmd, "reason", "disabled")
+				e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandDisabled), "/"+cmd))
+				return true
+			}
+			if !e.isAdmin(msg.UserID) {
+				slog.Info("audit: command_blocked",
+					"user_id", msg.UserID, "platform", msg.Platform,
+					"project", e.name, "command", cmd, "reason", "unauthorized")
+				e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/"+cmd))
+				return true
+			}
+			slog.Info("audit: command_executed",
+				"user_id", msg.UserID, "platform", msg.Platform,
+				"project", e.name, "command", cmd, "type", "external_agent")
+			e.cmdExternalBackend(p, msg, cmd, args)
+			return true
+		}
 		if custom, ok := e.commands.Resolve(cmd); ok {
 			if disabledCmds[strings.ToLower(custom.Name)] {
 				slog.Info("audit: command_blocked",
@@ -10547,6 +10625,19 @@ func (e *Engine) GetAllCommands() []BotCommandInfo {
 		})
 	}
 
+	// Configured external controllers each own a command named after their
+	// backend, so the bot menu must be derived from the live registry.
+	for _, backend := range sortedControllerBackends(e.externalControllers()) {
+		if seenCmds[backend] || disabledCmds[backend] {
+			continue
+		}
+		seenCmds[backend] = true
+		commands = append(commands, BotCommandInfo{
+			Command:     backend,
+			Description: e.i18n.Tf(MsgExternalBackendCommandDesc, externalBackendTitle(backend)),
+		})
+	}
+
 	// Collect custom commands from CommandRegistry
 	for _, c := range e.commands.ListAll() {
 		if seenCmds[strings.ToLower(c.Name)] {
@@ -13352,9 +13443,18 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	if prefix == "act" && cmd == "/model" {
 		return e.handleModelCardAction(args, sessionKey)
 	}
+	if prefix == "act" && cmd == "/agents" {
+		return e.handleExternalAgentAction(args, sessionKey)
+	}
 
 	if prefix == "act" {
 		e.executeCardAction(cmd, args, sessionKey)
+	}
+
+	// Backend names come from the controller registry, which is fixed at init
+	// and shares no name with a builtin nav target, so this cannot shadow one.
+	if backend := strings.TrimPrefix(cmd, "/"); backend != cmd && e.hasExternalController(backend) {
+		return e.renderExternalBackendCard(backend, sessionKey, externalPageNumber(strings.Fields(strings.TrimPrefix(args, "page"))))
 	}
 
 	switch cmd {
@@ -13392,6 +13492,8 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 			}
 		}
 		return e.renderDirCardSafe(sessionKey, page)
+	case "/agents":
+		return e.renderExternalAgentsCard(sessionKey)
 	case "/dir-browse":
 		return e.renderDirBrowserCard(sessionKey, args)
 	case "/current":

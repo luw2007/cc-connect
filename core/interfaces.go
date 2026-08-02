@@ -425,10 +425,14 @@ const (
 // snapshot. Revision is opaque, required, and MUST be supplied unchanged to
 // every subsequent operation; implementations reject a missing or stale value.
 type AgentControlTarget struct {
-	ID           string                   `json:"id"`
-	Revision     string                   `json:"revision"`
-	Backend      string                   `json:"backend"`
-	Kind         string                   `json:"kind"`
+	ID       string `json:"id"`
+	Revision string `json:"revision"`
+	Backend  string `json:"backend"`
+	Kind     string `json:"kind"`
+	// Title is the backend's own human label for this target (terminal
+	// title, workspace name, agent name). It identifies the window a user
+	// sees; it is never an identifier and MUST NOT be used for lookups.
+	Title        string                   `json:"title,omitempty"`
 	Directory    string                   `json:"directory,omitempty"`
 	Status       string                   `json:"status,omitempty"`
 	Capabilities []AgentControlCapability `json:"capabilities"`
