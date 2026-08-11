@@ -214,6 +214,7 @@ const (
 	MsgToolAllowFailed           MsgKey = "tool_allow_failed"
 	MsgToolAllowedNew            MsgKey = "tool_allowed_new"
 	MsgError                     MsgKey = "error"
+	MsgPiTaskTerminated          MsgKey = "pi_task_terminated"
 	MsgSessionNotFound           MsgKey = "session_not_found"
 	MsgFailedToStartAgentSession MsgKey = "failed_to_start_agent_session"
 	MsgFailedToDeleteSession     MsgKey = "failed_to_delete_session"
@@ -984,6 +985,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "❌ 錯誤: %v",
 		LangJapanese:           "❌ エラー: %v",
 		LangSpanish:            "❌ Error: %v",
+	},
+	MsgPiTaskTerminated: {
+		LangEnglish:            "❌ Pi task was terminated. Retry the request or start a new session.",
+		LangChinese:            "❌ Pi 任务已终止。请重试，或新建会话后再试。",
+		LangTraditionalChinese: "❌ Pi 任務已終止。請重試，或建立新工作階段後再試。",
+		LangJapanese:           "❌ Pi タスクが終了しました。リクエストを再試行するか、新しいセッションを開始してください。",
+		LangSpanish:            "❌ La tarea de Pi finalizó. Reintenta la solicitud o inicia una sesión nueva.",
 	},
 	MsgBackgroundAutoDenied: {
 		LangEnglish:            "⚠️ Background task requested permission for `%s` but was auto-denied (no active user turn). Send a message or use `/yolo` to approve future requests.",

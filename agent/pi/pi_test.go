@@ -1687,6 +1687,33 @@ func TestHandleMessageEnd_AssistantError(t *testing.T) {
 	}
 }
 
+func TestHandleMessageEnd_AssistantTerminatedProvidesRecoveryGuidance(t *testing.T) {
+	s := newTestSession()
+	defer s.cancel()
+
+	s.handleEvent(map[string]any{
+		"type": "message_end",
+		"message": map[string]any{
+			"role":         "assistant",
+			"errorMessage": "terminated",
+		},
+	})
+
+	evts := drainEvents(s)
+	if len(evts) != 1 {
+		t.Fatalf("got %d events, want 1", len(evts))
+	}
+	if evts[0].Type != core.EventError {
+		t.Fatalf("type = %s, want error", evts[0].Type)
+	}
+	if evts[0].Error == nil {
+		t.Fatal("error = nil, want normalized Pi termination")
+	}
+	if !strings.Contains(evts[0].Error.Error(), "pi task terminated") {
+		t.Errorf("error = %q, want normalized Pi termination", evts[0].Error)
+	}
+}
+
 func TestHandleMessageEnd_AssistantNoError(t *testing.T) {
 	s := newTestSession()
 	defer s.cancel()

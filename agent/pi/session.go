@@ -970,6 +970,9 @@ func (s *piSession) handleMessageEnd(raw map[string]any) {
 
 	case "assistant":
 		if errMsg, ok := msg["errorMessage"].(string); ok && errMsg != "" {
+			if strings.EqualFold(strings.TrimSpace(errMsg), "terminated") {
+				errMsg = "pi task terminated"
+			}
 			// Defer surfacing: Pi may auto-retry this turn (announced
 			// via agent_end.willRetry). The buffered error is flushed
 			// by the agent_end handler once the turn truly ends, or by

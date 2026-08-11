@@ -5308,6 +5308,7 @@ type agentErrorHandler struct {
 
 var agentErrorHandlers = []agentErrorHandler{
 	{"Session not found", MsgSessionNotFound},
+	{"pi task terminated", MsgPiTaskTerminated},
 }
 
 func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiveState, session *Session, sessions *SessionManager, sessionKey string, msgID string, turnStart time.Time, stopTypingFn func(), sendDone <-chan error, replyCtx any) {
