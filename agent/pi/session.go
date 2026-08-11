@@ -383,6 +383,29 @@ func isPiVisibleOutput(raw map[string]any) bool {
 	return typ == "text_delta" || typ == "toolcall_end"
 }
 
+const piTransientRetryAttempts = 2
+
+func isRetryablePiError(message string) bool {
+	switch strings.ToLower(strings.TrimSpace(message)) {
+	case "terminated", "request timed out.", "connection error.":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPiVisibleOutput(raw map[string]any) bool {
+	if raw["type"] != "message_update" {
+		return false
+	}
+	msg, _ := raw["assistantMessageEvent"].(map[string]any)
+	if msg == nil {
+		return false
+	}
+	typ, _ := msg["type"].(string)
+	return typ == "text_delta" || typ == "toolcall_end"
+}
+
 // sendJSON spawns `pi --mode json -p <prompt>` as a one-shot process,
 // reads all output events, and sends them to the events channel.
 //
