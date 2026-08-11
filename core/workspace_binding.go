@@ -168,6 +168,7 @@ func (m *WorkspaceBindingManager) MigrateChannelKey(projectKey, oldChannelKey, n
 	proj[newChannelKey] = &inherited
 	m.saveLocked()
 	return true
+}
 
 // LookupBySessionID returns the channel key and binding already associated
 // with agentSessionID within projectKey (C4: dedup on external session
