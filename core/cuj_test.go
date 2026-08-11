@@ -2805,6 +2805,8 @@ func TestCUJ_H4_FeishuTopicsKeepWorkspaceBindingsIsolated(t *testing.T) {
 	sendTopicCommand("om_root_b", "/workspace")
 	if got := lastReply(); !strings.Contains(got, normalizeWorkspacePath(workspaceB)) {
 		t.Fatalf("topic B changed after topic A unbind: %q", got)
+	}
+}
 
 // ===========================================================================
 // CUJ-CMUX1 · Approve a tool-use permission request via the same

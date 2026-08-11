@@ -6574,7 +6574,7 @@ func (e *Engine) processInteractiveEvents(ctx context.Context, state *interactiv
 							session.AddHistory("user", e.autoContinuePrompt)
 							nextSend := make(chan error, 1)
 							go func() {
-								nextSend <- state.agentSession.Send(e.autoContinuePrompt, nil, nil)
+								nextSend <- state.agentSession.Send(e.autoContinuePrompt, "", nil, nil)
 							}()
 							pendingSend = nextSend
 
@@ -14145,7 +14145,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		as := st.agentSession
 		st.mu.Unlock()
 		if as != nil {
-			_ = as.Send("/"+args, nil, nil)
+			_ = as.Send("/"+args, "", nil, nil)
 		}
 
 	case "/export-text":

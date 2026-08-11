@@ -111,12 +111,12 @@ func (s *cmuxSession) onHookFrame(name string) {
 	}
 }
 
-func (s *cmuxSession) Send(prompt string, _ []core.ImageAttachment, files []core.FileAttachment) error {
+func (s *cmuxSession) Send(prompt, messageID string, _ []core.ImageAttachment, files []core.FileAttachment) error {
 	if !s.alive.Load() {
 		return fmt.Errorf("cmux: session is closed")
 	}
 	if len(files) > 0 {
-		paths := core.SaveFilesToDisk(s.workDir, files)
+		paths := core.SaveFilesToDisk(s.workDir, messageID, files)
 		if len(paths) > 0 {
 			prompt += "\n# files: " + strings.Join(paths, ", ")
 		}

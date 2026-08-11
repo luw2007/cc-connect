@@ -194,7 +194,7 @@ func TestSend_UsesAgentPrompt(t *testing.T) {
 
 	s := newHerdrSession(context.Background(), c, "cc-turn", "/tmp", 100*time.Millisecond, false, false, false, 5)
 	defer s.Close()
-	if err := s.Send("hello", nil, nil); err != nil {
+	if err := s.Send("hello", "", nil, nil); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -330,7 +330,7 @@ func TestStreamOutput_SeedsBaseline_NoFullScreenDump(t *testing.T) {
 	})
 	s := newHerdrSession(context.Background(), c, "cc-stream", "/tmp", 100*time.Millisecond, false, false, true, 5)
 	defer s.Close()
-	if err := s.Send("new prompt", nil, nil); err != nil {
+	if err := s.Send("new prompt", "", nil, nil); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	ev := waitEvent(t, s.Events(), time.Second)
@@ -473,7 +473,7 @@ func TestWatchViaWait_AgentNotFoundEmitsErrorAndStops(t *testing.T) {
 	})
 	s := newHerdrSession(context.Background(), c, "missing", "/tmp", 100*time.Millisecond, false, false, false, 5)
 	defer s.Close()
-	if err := s.Send("hello", nil, nil); err != nil {
+	if err := s.Send("hello", "", nil, nil); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	ev := waitEvent(t, s.Events(), time.Second)
@@ -714,7 +714,7 @@ func TestSend_RefusesBlockedTargetBeforePrompt(t *testing.T) {
 	})
 	s := newHerdrSession(context.Background(), c, "cc-blocked", "/tmp", 100*time.Millisecond, false, false, false, 5)
 	defer s.Close()
-	if err := s.Send("must not be typed into menu", nil, nil); err == nil || !strings.Contains(err.Error(), "blocked") {
+	if err := s.Send("must not be typed into menu", "", nil, nil); err == nil || !strings.Contains(err.Error(), "blocked") {
 		t.Fatalf("Send error = %v, want blocked", err)
 	}
 	mu.Lock()

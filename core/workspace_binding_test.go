@@ -234,6 +234,8 @@ func TestWorkspaceBindingManager_InheritChannelKeyConcurrentTopics(t *testing.T)
 		if b := mgr.Lookup(projectKey, target); b == nil || b.Workspace != "/workspace/a" {
 			t.Fatalf("topic %q did not inherit the default: %+v", target, b)
 		}
+	}
+}
 
 // TestWorkspaceBindingManager_LookupBySessionID_ReturnsCopy is the B2
 // regression for LookupBySessionID's second defect: the returned binding

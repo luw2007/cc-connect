@@ -120,7 +120,7 @@ func newHerdrSession(ctx context.Context, c *client, target, workDir string, pol
 	return s
 }
 
-func (s *herdrSession) Send(prompt string, _ []core.ImageAttachment, files []core.FileAttachment) error {
+func (s *herdrSession) Send(prompt, messageID string, _ []core.ImageAttachment, files []core.FileAttachment) error {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
 	if !s.alive.Load() {
@@ -133,7 +133,7 @@ func (s *herdrSession) Send(prompt string, _ []core.ImageAttachment, files []cor
 		return fmt.Errorf("herdr: target blocked")
 	}
 	if len(files) > 0 {
-		if paths := core.SaveFilesToDisk(s.workDir, files); len(paths) > 0 {
+		if paths := core.SaveFilesToDisk(s.workDir, messageID, files); len(paths) > 0 {
 			prompt += "\n# files: " + strings.Join(paths, ", ")
 		}
 	}
