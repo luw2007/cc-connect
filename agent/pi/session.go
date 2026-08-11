@@ -356,6 +356,29 @@ func (s *piSession) Send(msg string, messageID string, images []core.ImageAttach
 	return s.sendJSON(msg, atFiles)
 }
 
+const piTransientRetryAttempts = 2
+
+func isRetryablePiError(message string) bool {
+	switch strings.ToLower(strings.TrimSpace(message)) {
+	case "terminated", "request timed out.", "connection error.":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPiVisibleOutput(raw map[string]any) bool {
+	if raw["type"] != "message_update" {
+		return false
+	}
+	msg, _ := raw["assistantMessageEvent"].(map[string]any)
+	if msg == nil {
+		return false
+	}
+	typ, _ := msg["type"].(string)
+	return typ == "text_delta" || typ == "toolcall_end"
+}
+
 // sendJSON spawns `pi --mode json -p <prompt>` as a one-shot process,
 // reads all output events, and sends them to the events channel.
 //
@@ -366,51 +389,73 @@ func (s *piSession) Send(msg string, messageID string, images []core.ImageAttach
 func (s *piSession) sendJSON(prompt string, atFiles []string) error {
 	args := buildJSONArgs(s.extraArgs, prompt, s.CurrentSessionID(), s.model, s.thinking, atFiles)
 
-	slog.Debug("piSession: spawning json mode", "cmd", s.cmd, "sessionID", s.CurrentSessionID())
+	for attempt := 1; attempt <= piTransientRetryAttempts; attempt++ {
+		slog.Debug("piSession: spawning json mode", "cmd", s.cmd, "sessionID", s.CurrentSessionID(), "attempt", attempt)
+		cmd := exec.CommandContext(s.ctx, s.cmd, args...)
+		cmd.Dir = s.workDir
+		env := os.Environ()
+		if len(s.extraEnv) > 0 {
+			env = core.MergeEnv(env, s.extraEnv)
+		}
+		cmd.Env = env
 
-	cmd := exec.CommandContext(s.ctx, s.cmd, args...)
-	cmd.Dir = s.workDir
-	env := os.Environ()
-	if len(s.extraEnv) > 0 {
-		env = core.MergeEnv(env, s.extraEnv)
-	}
-	cmd.Env = env
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return fmt.Errorf("stdout pipe: %w", err)
+		}
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start: %w", err)
+		}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
+		retryable, visibleOutput := false, false
+		var retryableMessage string
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+			var raw map[string]any
+			if err := json.Unmarshal([]byte(line), &raw); err != nil {
+				slog.Debug("piSession: non-JSON line", "line", truncStr(line, 100))
+				continue
+			}
+			if msg, _ := raw["message"].(map[string]any); msg != nil {
+				if errMsg, _ := msg["errorMessage"].(string); isRetryablePiError(errMsg) && !visibleOutput {
+					retryable = true
+					retryableMessage = errMsg
+					continue
+				}
+			}
+			visibleOutput = visibleOutput || isPiVisibleOutput(raw)
+			s.handleEvent(raw)
+		}
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start: %w", err)
-	}
-
-	// Read events from process output
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
+		err = cmd.Wait()
+		if retryable && attempt < piTransientRetryAttempts && s.ctx.Err() == nil {
+			slog.Warn("piSession: retrying transient JSON task failure", "attempt", attempt, "max_attempts", piTransientRetryAttempts)
 			continue
 		}
-		var raw map[string]any
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			slog.Debug("piSession: non-JSON line", "line", truncStr(line, 100))
-			continue
+		if retryable {
+			evt := core.Event{Type: core.EventError, Error: fmt.Errorf("pi task terminated after retry: %s", retryableMessage)}
+			select {
+			case s.events <- evt:
+			case <-s.ctx.Done():
+			}
+			break
 		}
-		s.handleEvent(raw)
-	}
-
-	err = cmd.Wait()
-	if err != nil {
-		slog.Error("piSession: process error", "cmd", s.cmd, "error", err, "stderr", stderrBuf.String())
-		evt := core.Event{Type: core.EventError, Error: fmt.Errorf("pi: %s: %w", strings.TrimSpace(stderrBuf.String()), err)}
-		select {
-		case s.events <- evt:
-		case <-s.ctx.Done():
+		if err != nil {
+			slog.Error("piSession: process error", "cmd", s.cmd, "error", err, "stderr", stderrBuf.String())
+			evt := core.Event{Type: core.EventError, Error: fmt.Errorf("pi: %s: %w", strings.TrimSpace(stderrBuf.String()), err)}
+			select {
+			case s.events <- evt:
+			case <-s.ctx.Done():
+			}
 		}
+		break
 	}
 
 	// Signal turn completion. Flush a deferred terminal error first in
@@ -430,7 +475,6 @@ func (s *piSession) sendJSON(prompt string, atFiles []string) error {
 	case s.events <- evt:
 	case <-s.ctx.Done():
 	}
-
 	return nil
 }
 

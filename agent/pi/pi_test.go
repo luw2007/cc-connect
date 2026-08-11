@@ -1714,6 +1714,85 @@ func TestHandleMessageEnd_AssistantTerminatedProvidesRecoveryGuidance(t *testing
 	}
 }
 
+func TestIsRetryablePiTermination(t *testing.T) {
+	for _, tt := range []struct {
+		err  string
+		want bool
+	}{
+		{err: "terminated", want: true},
+		{err: " TERMINATED ", want: true},
+		{err: "Request timed out.", want: true},
+		{err: "Connection error.", want: true},
+		{err: "400 model not supported", want: false},
+	} {
+		if got := isRetryablePiError(tt.err); got != tt.want {
+			t.Errorf("isRetryablePiError(%q) = %v, want %v", tt.err, got, tt.want)
+		}
+	}
+}
+
+func TestSendJSON_RetriesTransientTerminationBeforeVisibleOutput(t *testing.T) {
+	countPath := filepath.Join(t.TempDir(), "attempts")
+	scriptPath := filepath.Join(t.TempDir(), "fake-pi.sh")
+	script := fmt.Sprintf(`#!/bin/sh
+count=0
+[ -f %q ] && count=$(cat %q)
+count=$((count + 1))
+printf '%%s' "$count" > %q
+if [ "$count" -eq 1 ]; then
+  echo '{"type":"message_end","message":{"role":"assistant","errorMessage":"terminated"}}'
+else
+  echo '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"recovered"}}'
+fi
+`, countPath, countPath, countPath)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake Pi: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := &piSession{cmd: scriptPath, workDir: t.TempDir(), events: make(chan core.Event, 8), ctx: ctx, cancel: cancel}
+	s.alive.Store(true)
+	if err := s.sendJSON("test"); err != nil {
+		t.Fatalf("sendJSON: %v", err)
+	}
+
+	attempts, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatalf("read attempts: %v", err)
+	}
+	if got := string(attempts); got != "2" {
+		t.Fatalf("attempts = %q, want 2", got)
+	}
+	evts := drainEvents(s)
+	if len(evts) != 2 || evts[0].Content != "recovered" || evts[1].Type != core.EventResult {
+		t.Fatalf("events = %#v, want recovered text then result", evts)
+	}
+}
+
+func TestSendJSON_SurfacesTerminationAfterRetryExhausted(t *testing.T) {
+	scriptPath := filepath.Join(t.TempDir(), "fake-pi.sh")
+	script := `#!/bin/sh
+echo '{"type":"message_end","message":{"role":"assistant","errorMessage":"terminated"}}'
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake Pi: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := &piSession{cmd: scriptPath, workDir: t.TempDir(), events: make(chan core.Event, 8), ctx: ctx, cancel: cancel}
+	s.alive.Store(true)
+	if err := s.sendJSON("test"); err != nil {
+		t.Fatalf("sendJSON: %v", err)
+	}
+
+	evts := drainEvents(s)
+	if len(evts) != 2 || evts[0].Type != core.EventError || !strings.Contains(evts[0].Error.Error(), "after retry") || evts[1].Type != core.EventResult {
+		t.Fatalf("events = %#v, want termination error then result", evts)
+	}
+}
+
 func TestHandleMessageEnd_AssistantNoError(t *testing.T) {
 	s := newTestSession()
 	defer s.cancel()
