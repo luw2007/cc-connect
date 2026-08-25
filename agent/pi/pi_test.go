@@ -1700,17 +1700,11 @@ func TestHandleMessageEnd_AssistantTerminatedProvidesRecoveryGuidance(t *testing
 	})
 
 	evts := drainEvents(s)
-	if len(evts) != 1 {
-		t.Fatalf("got %d events, want 1", len(evts))
+	if len(evts) != 0 {
+		t.Fatalf("got %d immediate events, want 0 while retry remains possible", len(evts))
 	}
-	if evts[0].Type != core.EventError {
-		t.Fatalf("type = %s, want error", evts[0].Type)
-	}
-	if evts[0].Error == nil {
-		t.Fatal("error = nil, want normalized Pi termination")
-	}
-	if !strings.Contains(evts[0].Error.Error(), "pi task terminated") {
-		t.Errorf("error = %q, want normalized Pi termination", evts[0].Error)
+	if s.pendingErr != "pi task terminated" {
+		t.Errorf("pendingErr = %q, want normalized Pi termination", s.pendingErr)
 	}
 }
 
@@ -1753,7 +1747,7 @@ fi
 	defer cancel()
 	s := &piSession{cmd: scriptPath, workDir: t.TempDir(), events: make(chan core.Event, 8), ctx: ctx, cancel: cancel}
 	s.alive.Store(true)
-	if err := s.sendJSON("test"); err != nil {
+	if err := s.sendJSON("test", nil); err != nil {
 		t.Fatalf("sendJSON: %v", err)
 	}
 
@@ -1783,7 +1777,7 @@ echo '{"type":"message_end","message":{"role":"assistant","errorMessage":"termin
 	defer cancel()
 	s := &piSession{cmd: scriptPath, workDir: t.TempDir(), events: make(chan core.Event, 8), ctx: ctx, cancel: cancel}
 	s.alive.Store(true)
-	if err := s.sendJSON("test"); err != nil {
+	if err := s.sendJSON("test", nil); err != nil {
 		t.Fatalf("sendJSON: %v", err)
 	}
 

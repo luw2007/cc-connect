@@ -212,6 +212,7 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 
 	var sessionID string
 	var sessionCwd string
+	var sessionSource json.RawMessage
 	var summary string
 	var msgCount int
 	userMsgSeen := 0
@@ -235,13 +236,18 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 
 		switch entry.Type {
 		case "session_meta":
+			if sessionID != "" {
+				continue
+			}
 			var meta struct {
-				ID  string `json:"id"`
-				Cwd string `json:"cwd"`
+				ID     string          `json:"id"`
+				Cwd    string          `json:"cwd"`
+				Source json.RawMessage `json:"source"`
 			}
 			if json.Unmarshal(entry.Payload, &meta) == nil {
 				sessionID = meta.ID
 				sessionCwd = meta.Cwd
+				sessionSource = meta.Source
 			}
 
 		case "response_item":
@@ -277,6 +283,9 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 	}
 
 	if sessionID == "" {
+		return nil
+	}
+	if isSubagentSessionSource(sessionSource) {
 		return nil
 	}
 
@@ -429,6 +438,15 @@ func patchSessionSourceFile(path string) {
 	out = append(out, data[idx:]...)
 
 	_ = os.WriteFile(path, out, 0o644)
+}
+
+// isSubagentSessionSource reports whether Codex session metadata marks a
+// rollout as a subordinate thread rather than a user-visible session.
+func isSubagentSessionSource(source json.RawMessage) bool {
+	var value struct {
+		Subagent json.RawMessage `json:"subagent"`
+	}
+	return len(source) > 0 && json.Unmarshal(source, &value) == nil && len(value.Subagent) > 0
 }
 
 // isUserPrompt returns true if the text looks like an actual user prompt
