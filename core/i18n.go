@@ -244,7 +244,6 @@ const (
 	MsgLangChanged             MsgKey = "lang_changed"
 	MsgLangInvalid             MsgKey = "lang_invalid"
 	MsgLangCurrent             MsgKey = "lang_current"
-	MsgUnknownCommand          MsgKey = "unknown_command"
 	MsgWelcome                 MsgKey = "welcome"
 	MsgHelp                    MsgKey = "message_help" // change from "help", which is used now for builtin command help
 	MsgHelpTitle               MsgKey = "help_title"
@@ -1272,13 +1271,6 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "🌐 當前語言: **%s**\n\n用法: /lang <en|zh|zh-TW|ja|es|auto>",
 		LangJapanese:           "🌐 現在の言語: **%s**\n\n使い方: /lang <en|zh|zh-TW|ja|es|auto>",
 		LangSpanish:            "🌐 Idioma actual: **%s**\n\nUso: /lang <en|zh|zh-TW|ja|es|auto>",
-	},
-	MsgUnknownCommand: {
-		LangEnglish:            "`%s` is not a cc-connect command, forwarding to agent...",
-		LangChinese:            "`%s` 不是 cc-connect 命令，已转发给 Agent 处理...",
-		LangTraditionalChinese: "`%s` 不是 cc-connect 命令，已轉發給 Agent 處理...",
-		LangJapanese:           "`%s` は cc-connect のコマンドではありません。エージェントに転送します...",
-		LangSpanish:            "`%s` no es un comando de cc-connect, reenviando al agente...",
 	},
 	MsgWelcome: {
 		LangEnglish:            "👋 Hi! I'm cc-connect, bridging you to **%s**.\n\nJust send a message to chat with the agent. Type /help to see built-in commands.",

@@ -2772,6 +2772,40 @@ func TestEngine_DisabledCommandsWildcard(t *testing.T) {
 	}
 }
 
+func TestHandleMessage_UnknownSlashCommandForwardsWithoutNotice(t *testing.T) {
+	agentSession := newResultAgentSession("agent reply")
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &resultAgent{session: agentSession}, []Platform{p}, "", LangEnglish)
+
+	e.handleMessage(p, &Message{
+		SessionKey: "test:user1",
+		Platform:   "test",
+		UserID:     "user1",
+		Content:    "/see inspect this",
+		ReplyCtx:   "ctx",
+	})
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if len(agentSession.sentPrompts) == 1 && len(p.getSent()) == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for forwarded command, prompts=%v replies=%v", agentSession.sentPrompts, p.getSent())
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	if got := agentSession.sentPrompts[0]; got != "/see inspect this" {
+		t.Fatalf("agent prompt = %q, want unknown slash command unchanged", got)
+	}
+	if got := p.getSent(); len(got) != 1 || got[0] != "agent reply" {
+		t.Fatalf("platform replies = %v, want only agent reply", got)
+	}
+}
+
 // --- admin_from tests ---
 
 func TestEngine_AdminFrom_DenyByDefault(t *testing.T) {

@@ -7454,8 +7454,7 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 			e.executeSkill(p, msg, skill, args)
 			return true
 		}
-		// Not a cc-connect command — notify user, then fall through to agent
-		e.send(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgUnknownCommand), "/"+cmd))
+		// Not a cc-connect command — fall through to agent.
 		return false
 	}
 	return true
