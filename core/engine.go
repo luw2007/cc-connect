@@ -3815,7 +3815,6 @@ func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions 
 	e.cleanupInteractiveState(interactiveKey)
 	session.UnlockWithoutUpdate(lockGen)
 
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgSessionAutoResetIdle, int(e.resetOnIdle/time.Minute)))
 	return newSession, newGen
 }
 
