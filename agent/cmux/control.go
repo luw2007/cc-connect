@@ -20,6 +20,27 @@ import (
 
 var cmuxPermissionDecisions = []string{"once", "always", "all", "bypass", "deny"}
 
+func timeAgo(s string) string {
+	if s == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return s
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
 type controllerSocketResolver func(context.Context, string, string) (string, error)
 
 type Controller struct {
@@ -245,6 +266,7 @@ func (c *Controller) listTargetStates(ctx context.Context) ([]controlTargetState
 			Title:     workspace.stableName(),
 			Directory: workspace.CWD,
 			Status:    hook.Lifecycle,
+			Description: strings.TrimSpace(workspace.Command + " · " + timeAgo(workspace.UpdatedAt)),
 		}
 		target.Capabilities = core.AgentControlSupportedCapabilities(c, candidates...)
 		states = append(states, controlTargetState{target: target, surfaceID: surfaceID, workstreamID: hook.WorkstreamID})

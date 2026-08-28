@@ -435,6 +435,7 @@ type AgentControlTarget struct {
 	Title        string                   `json:"title,omitempty"`
 	Directory    string                   `json:"directory,omitempty"`
 	Status       string                   `json:"status,omitempty"`
+	Description  string                   `json:"description,omitempty"`
 	Capabilities []AgentControlCapability `json:"capabilities"`
 }
 

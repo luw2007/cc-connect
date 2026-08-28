@@ -363,6 +363,9 @@ func (e *Engine) renderExternalAgentDetail(controller AgentController, target Ag
 	cb := NewCard().Title(externalBackendTitle(target.Backend), "blue")
 	cb.Markdown(externalTargetSummary(target))
 	cb.Markdownf("`%s`", target.ID)
+	if target.Description != "" {
+		cb.Markdownf("```\n%s\n```", target.Description)
+	}
 	if labels := externalCapabilityLabels(target); labels != "" {
 		cb.Markdown(e.i18n.Tf(MsgExternalAgentCapabilities, labels))
 	}
