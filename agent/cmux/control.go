@@ -266,7 +266,8 @@ func (c *Controller) listTargetStates(ctx context.Context) ([]controlTargetState
 			Title:     workspace.stableName(),
 			Directory: workspace.CWD,
 			Status:    hook.Lifecycle,
-			Description: strings.TrimSpace(workspace.Command + " · " + timeAgo(workspace.UpdatedAt)),
+			Description: workspace.description(),
+			LatestMessage: workspace.latestMessage(),
 		}
 		target.Capabilities = core.AgentControlSupportedCapabilities(c, candidates...)
 		states = append(states, controlTargetState{target: target, surfaceID: surfaceID, workstreamID: hook.WorkstreamID})

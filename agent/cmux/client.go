@@ -307,16 +307,18 @@ func (c *client) feedQuestionReply(ctx context.Context, requestID string, select
 // response uses a different flat shape entirely (see newWorkspace) and does
 // not populate this struct via unmarshal.
 type workspaceInfo struct {
-	ID             string  `json:"id"`
-	Name           string  `json:"-"`
-	Title          string  `json:"title"`
-	CustomTitle    *string `json:"custom_title"`
-	HasCustomTitle bool    `json:"has_custom_title"`
-	CWD            string  `json:"current_directory"`
-	Command        string  `json:"command,omitempty"`
-	SurfaceID      string  `json:"surface_id,omitempty"`
-	UpdatedAt      string  `json:"latest_submitted_at,omitempty"`
-	Description    string  `json:"description,omitempty"`
+	ID                       string  `json:"id"`
+	Name                     string  `json:"-"`
+	Title                    string  `json:"title"`
+	CustomTitle              *string `json:"custom_title"`
+	HasCustomTitle            bool    `json:"has_custom_title"`
+	CWD                      string  `json:"current_directory"`
+	Command                  string  `json:"command,omitempty"`
+	SurfaceID                string  `json:"surface_id,omitempty"`
+	UpdatedAt                string  `json:"latest_submitted_at,omitempty"`
+	LatestConversationMessage string  `json:"latest_conversation_message,omitempty"`
+	LatestSubmittedMessage   string  `json:"latest_submitted_message,omitempty"`
+	Description              string  `json:"description,omitempty"`
 }
 
 func (w workspaceInfo) stableName() string {
@@ -327,6 +329,27 @@ func (w workspaceInfo) stableName() string {
 		return *w.CustomTitle
 	}
 	return ""
+}
+
+func (w workspaceInfo) description() string {
+	var parts []string
+	if w.Command != "" {
+		parts = append(parts, w.Command)
+	}
+	if t := timeAgo(w.UpdatedAt); t != "" {
+		parts = append(parts, t)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (w workspaceInfo) latestMessage() string {
+	if w.LatestConversationMessage != "" {
+		return w.LatestConversationMessage
+	}
+	return w.LatestSubmittedMessage
 }
 
 func (w workspaceInfo) displayName() string {

@@ -436,6 +436,7 @@ type AgentControlTarget struct {
 	Directory    string                   `json:"directory,omitempty"`
 	Status       string                   `json:"status,omitempty"`
 	Description  string                   `json:"description,omitempty"`
+	LatestMessage string                  `json:"latest_message,omitempty"`
 	Capabilities []AgentControlCapability `json:"capabilities"`
 }
 

@@ -366,6 +366,9 @@ func (e *Engine) renderExternalAgentDetail(controller AgentController, target Ag
 	if target.Description != "" {
 		cb.Markdownf("```\n%s\n```", target.Description)
 	}
+	if target.LatestMessage != "" {
+		cb.Markdownf("💬 %s", target.LatestMessage)
+	}
 	if labels := externalCapabilityLabels(target); labels != "" {
 		cb.Markdown(e.i18n.Tf(MsgExternalAgentCapabilities, labels))
 	}
