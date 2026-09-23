@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chenhg5/cc-connect/agent/internal/termdiff"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -249,7 +251,7 @@ func capturePane(target string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return normalizeCapture(string(out)), nil
+	return termdiff.NormalizeCapture(string(out), true), nil
 }
 
 func sendKeys(target, keys string) error {
@@ -292,7 +294,7 @@ func (s *tmuxSession) extractResponse() string {
 	baseline := s.baselineCapture
 	s.mu.Unlock()
 
-	response := s.cleanTUIContent(extractNew(baseline, current))
+	response := s.cleanTUIContent(termdiff.ExtractNew(baseline, current))
 	if response != "" {
 		response = "```\n" + response + "\n```"
 	}
@@ -308,7 +310,7 @@ func captureScrollback(target string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return normalizeCapture(string(out)), nil
+	return termdiff.NormalizeCapture(string(out), true), nil
 }
 
 // shellQuote wraps a path in single quotes and escapes any embedded single quotes.
@@ -354,85 +356,68 @@ func (s *tmuxSession) cleanTUIContent(text string) string {
 	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
 
-// normalizeCapture trims trailing whitespace per line and strips ANSI codes.
-func normalizeCapture(raw string) string {
-	raw = ansiRe.ReplaceAllString(raw, "")
-	lines := strings.Split(raw, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " \t\r")
+// InjectKey sends a raw key name to the tmux pane without literal mode,
+// allowing tmux to interpret it (e.g., "C-c", "Escape", "Up", "Enter").
+func (s *tmuxSession) InjectKey(key string) error {
+	if !s.alive.Load() {
+		return fmt.Errorf("tmux: session not alive")
 	}
-	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
+	out, err := exec.Command("tmux", "send-keys", "-t", s.target, key).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux: inject key %q: %w: %s", key, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
-// ansiRe matches common ANSI/VT escape sequences.
-// OSC must come first so "\x1b]" is consumed fully (not as a generic two-char sequence).
-var ansiRe = regexp.MustCompile(
-	`\x1b\][^\x07\x1b]*\x07` + // OSC: ESC ] ... BEL
-		`|\x1b\[[0-9;]*[a-zA-Z]` + // CSI: ESC [ params letter
-		`|\x1b.`, // Other two-char escape sequences
-)
+// CaptureBuffer returns the full terminal buffer (scrollback + visible pane).
+func (s *tmuxSession) CaptureBuffer() (string, error) {
+	if !s.alive.Load() {
+		return "", fmt.Errorf("tmux: session not alive")
+	}
+	return captureScrollback(s.target)
+}
 
-// extractNew returns the response text that appeared in current after the baseline.
-// It handles three cases:
-//  1. Linear shell output — current is baseline + new lines (HasPrefix fast path).
-//  2. TUI redraws (e.g. Claude Code) — terminal overwrites lines in place; find the
-//     longest common line prefix shared by both snapshots, then return the new lines
-//     that follow it in current, stripping the repeated trailing prompt lines.
-//  3. Terminal scrolled — baseline has partially scrolled off; use a shrinking anchor.
-func extractNew(baseline, current string) string {
-	if current == baseline {
-		return ""
+// AttachTerminal opens a raw pty pipe to the tmux pane via `tmux attach-session`
+// and returns it as an io.ReadWriteCloser for WebSocket proxying.
+func (s *tmuxSession) AttachTerminal() (io.ReadWriteCloser, error) {
+	if !s.alive.Load() {
+		return nil, fmt.Errorf("tmux: session not alive")
 	}
-	if baseline == "" {
-		return current
-	}
+	// Use `tmux pipe-pane` to stream pane output; pair with a named pipe for input.
+	// Simpler approach: run `tmux attach-session -t <target>` inside a pty.
+	// We use creack/pty if available; fall back to a pipe-based approach.
+	return newTmuxPipe(s.target)
+}
 
-	// Fast path: linear output, content only grew.
-	if strings.HasPrefix(current, baseline) {
-		return strings.TrimLeft(current[len(baseline):], "\n")
+// TerminalSize returns the current rows/cols of the tmux pane.
+func (s *tmuxSession) TerminalSize() (rows, cols int) {
+	out, err := exec.Command("tmux", "display-message", "-t", s.target, "-p", "#{pane_height} #{pane_width}").Output()
+	if err != nil {
+		return 24, 80
 	}
+	parts := strings.Fields(strings.TrimSpace(string(out)))
+	if len(parts) == 2 {
+		_, _ = fmt.Sscan(parts[0], &rows)
+		_, _ = fmt.Sscan(parts[1], &cols)
+	}
+	if rows == 0 {
+		rows = 24
+	}
+	if cols == 0 {
+		cols = 80
+	}
+	return rows, cols
+}
 
-	baseLines := strings.Split(baseline, "\n")
-	curLines := strings.Split(current, "\n")
-
-	// TUI path: find how many leading lines the two snapshots share (the static
-	// frame/header), then return the new lines that follow in current.
-	commonLen := 0
-	for i := 0; i < len(baseLines) && i < len(curLines); i++ {
-		if baseLines[i] != curLines[i] {
-			break
-		}
-		commonLen = i + 1
+// ResizeTerminal resizes the tmux window/pane.
+func (s *tmuxSession) ResizeTerminal(rows, cols int) error {
+	if !s.alive.Load() {
+		return fmt.Errorf("tmux: session not alive")
 	}
-	if commonLen > 0 && commonLen < len(curLines) {
-		newLines := curLines[commonLen:]
-		// Strip trailing lines that duplicate the baseline's suffix (e.g. the prompt ">").
-		bl := baseLines
-		for len(newLines) > 0 && len(bl) > 0 && newLines[len(newLines)-1] == bl[len(bl)-1] {
-			newLines = newLines[:len(newLines)-1]
-			bl = bl[:len(bl)-1]
-		}
-		result := strings.TrimRight(strings.Join(newLines, "\n"), "\n")
-		if result != "" {
-			return result
-		}
+	out, err := exec.Command("tmux", "resize-window", "-t", s.target,
+		"-x", fmt.Sprintf("%d", cols), "-y", fmt.Sprintf("%d", rows)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux: resize %dx%d: %w: %s", cols, rows, err, strings.TrimSpace(string(out)))
 	}
-
-	// Scroll path: baseline has partially scrolled off the top; try progressively
-	// shorter anchors from the end of baseline to find where new content begins.
-	maxAnchor := 5
-	if len(baseLines) < maxAnchor {
-		maxAnchor = len(baseLines)
-	}
-	for n := maxAnchor; n >= 1; n-- {
-		anchor := strings.Join(baseLines[len(baseLines)-n:], "\n")
-		if idx := strings.Index(current, anchor); idx >= 0 {
-			rest := strings.TrimLeft(current[idx+len(anchor):], "\n")
-			if rest != "" {
-				return rest
-			}
-		}
-	}
-
-	return current
+	return nil
 }
