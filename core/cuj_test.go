@@ -2318,10 +2318,20 @@ func TestCUJ_I5_RichCardStreamingLifecycle(t *testing.T) {
 	}
 	agent.mu.Unlock()
 	send("m2", "second")
-	// Race-enabled full-package runs can be heavily contended; wait for the
-	// queued turn's second card with the same generous budget used by other CUJs.
+	// Wait for the queued turn's second terminal card. The queue acknowledgement
+	// is also a platform send, so waiting for two total sends can stop before the
+	// queued turn has rendered anything and makes this CUJ timing-dependent.
 	deadline = time.Now().Add(30 * time.Second)
-	for len(p.getSent()) < 2 && time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
+		cardCount := 0
+		for _, item := range p.getSent() {
+			if strings.HasPrefix(item, `{"status":`) {
+				cardCount++
+			}
+		}
+		if cardCount >= 2 {
+			break
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	time.Sleep(100 * time.Millisecond)
