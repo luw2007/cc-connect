@@ -240,6 +240,9 @@ func main() {
 
 	// Handle subcommands before flag parsing
 	if len(os.Args) > 1 {
+		if dispatchAgentSubcommand(os.Args[1:], runAgent) {
+			return
+		}
 		switch os.Args[1] {
 		case "config-example":
 			fmt.Print(ccconnect.ConfigExampleTOML)
@@ -503,6 +506,8 @@ func main() {
 		engine.SetBaseWorkDir(workDir)
 		engine.SetProjectStateStore(projectState)
 		engine.SetDataDir(cfg.DataDir)
+
+		engine.SetAgentControllers(buildExternalAgentControllers(proj.Name, proj.ExternalAgentBackends))
 
 		if proj.Notes != nil && proj.Notes.Enabled {
 			notesCfg := core.NotesConfig{
@@ -1777,6 +1782,14 @@ Commands:
   send               Send a message to an active session via internal API
                      (-m <text> | --stdin, -p <project>, -s <session>)
 
+  agent              Directly control an existing agent target
+    list             Discover targets and copy revisions with --json
+    tail             Read output using an exact target revision
+    key              Send one exact key using an exact target revision
+    requests         Inspect pending requests using an exact target revision
+    approve          Respond to a permission using exact target/request revisions
+    answer           Answer indexed questions using exact target/request revisions
+
   cron               Manage scheduled tasks
     add              Create a scheduled task (-c <expr> --prompt <text>)
     list             List scheduled tasks
@@ -2110,6 +2123,29 @@ func buildAgentOptions(dataDir string, proj config.ProjectConfig) map[string]any
 	opts["cc_data_dir"] = dataDir
 	opts["cc_project"] = proj.Name
 	return opts
+}
+
+// buildExternalAgentControllers resolves the external agent controllers a
+// project exposes through /agents and the per-backend commands. A nil
+// selection means every controller compiled into this binary, so a fresh
+// install can inspect cmux/herdr/orca without extra config; an explicit empty
+// list is a deliberate opt-out. A controller whose backing CLI or socket is
+// missing is skipped, never fatal.
+func buildExternalAgentControllers(project string, selection *[]string) map[string]core.AgentController {
+	backends := core.ListRegisteredAgentControllers()
+	if selection != nil {
+		backends = *selection
+	}
+	controllers := make(map[string]core.AgentController, len(backends))
+	for _, backend := range backends {
+		controller, err := core.CreateAgentController(backend, nil)
+		if err != nil {
+			slog.Debug("external agent controller unavailable", "project", project, "backend", backend, "error", err)
+			continue
+		}
+		controllers[backend] = controller
+	}
+	return controllers
 }
 
 func wireAgentProviders(agent core.Agent, agentCfg config.AgentConfig) providerWiringResult {

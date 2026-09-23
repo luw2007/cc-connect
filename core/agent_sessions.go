@@ -274,6 +274,8 @@ func (e *Engine) populateAgentSessionBindings(views []AgentSessionView) {
 }
 
 func (e *Engine) ensureAgentSessionBindings() *WorkspaceBindingManager {
+	e.agentBindingsMu.Lock()
+	defer e.agentBindingsMu.Unlock()
 	if e.workspaceBindings == nil {
 		storePath := ""
 		if e.dataDir != "" {

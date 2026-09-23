@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -334,6 +335,44 @@ func TestPrintUsage_ListsCronExecCommand(t *testing.T) {
 	}
 }
 
+func TestPrintUsage_ListsAgentCommand(t *testing.T) {
+	out := captureStderr(t, printUsage)
+
+	if !strings.Contains(out, "agent              Directly control an existing agent target") {
+		t.Fatalf("printUsage() output missing agent command:\n%s", out)
+	}
+	for _, line := range []string{
+		"    list             Discover targets and copy revisions with --json",
+		"    tail             Read output using an exact target revision",
+		"    key              Send one exact key using an exact target revision",
+		"    requests         Inspect pending requests using an exact target revision",
+		"    approve          Respond to a permission using exact target/request revisions",
+		"    answer           Answer indexed questions using exact target/request revisions",
+	} {
+		if !strings.Contains(out, line) {
+			t.Errorf("printUsage() agent section missing line %q:\n%s", line, out)
+		}
+	}
+}
+
+func TestDispatchAgentSubcommand(t *testing.T) {
+	var got []string
+	handled := dispatchAgentSubcommand([]string{"agent", "list", "--json"}, func(args []string) {
+		got = append([]string(nil), args...)
+	})
+	if !handled {
+		t.Fatal("dispatchAgentSubcommand did not handle agent")
+	}
+	if want := []string{"list", "--json"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("dispatched args = %#v, want %#v", got, want)
+	}
+	if dispatchAgentSubcommand([]string{"send"}, func([]string) {
+		t.Fatal("runner called for unrelated command")
+	}) {
+		t.Fatal("dispatchAgentSubcommand handled unrelated command")
+	}
+}
+
 func TestCanonicalCronSubcommand_ManualTriggerAliases(t *testing.T) {
 	for _, sub := range []string{"exec", "run", "trigger"} {
 		if got := canonicalCronSubcommand(sub); got != "exec" {
@@ -433,5 +472,32 @@ func TestParseRootCLIOptionsHelp(t *testing.T) {
 func TestRunTopLevelCommandUnknown(t *testing.T) {
 	if runTopLevelCommand([]string{"bind", "--help"}) {
 		t.Fatal("runTopLevelCommand() handled unknown command")
+	}
+}
+
+// A project that never mentions external_agent_backends must still reach every
+// controller compiled into this binary -- the reported symptom was `/cmux`
+// falling through to the agent because the console was opt-in by config.
+func TestBuildExternalAgentControllersDefaultsToEveryRegisteredBackend(t *testing.T) {
+	registered := core.ListRegisteredAgentControllers()
+	if len(registered) == 0 {
+		t.Skip("binary was built without any agent controller")
+	}
+
+	omitted := buildExternalAgentControllers("demo", nil)
+	for backend := range omitted {
+		if !slices.Contains(registered, backend) {
+			t.Fatalf("controller %q is not a registered backend: %v", backend, registered)
+		}
+	}
+
+	// An explicit empty list is a deliberate opt-out, never "use the default".
+	if disabled := buildExternalAgentControllers("demo", &[]string{}); len(disabled) != 0 {
+		t.Fatalf("empty selection produced %d controllers, want 0", len(disabled))
+	}
+
+	// An unknown backend is skipped instead of aborting startup.
+	if unknown := buildExternalAgentControllers("demo", &[]string{"definitely-not-a-backend"}); len(unknown) != 0 {
+		t.Fatalf("unknown selection produced %d controllers, want 0", len(unknown))
 	}
 }

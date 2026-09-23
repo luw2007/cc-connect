@@ -599,6 +599,11 @@ type ProjectConfig struct {
 	// milliseconds. Default 15000 (15s); clamped to a minimum of 5000 (5s)
 	// so a too-small value cannot busy-loop the sweep.
 	AutoGroupIntervalMs *int `toml:"auto_group_interval_ms,omitempty"`
+	// ExternalAgentBackends selects which registered external agent
+	// controllers back /agents and the per-backend commands. Omitted means
+	// every controller compiled into this binary; an explicit empty list
+	// disables the control console for this project.
+	ExternalAgentBackends *[]string `toml:"external_agent_backends,omitempty"`
 	// Shell overrides the global shell for this project. See Config.Shell.
 	Shell string `toml:"shell,omitempty"`
 	// ShellProfile overrides the global shell_profile for this project.
