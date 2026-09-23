@@ -827,8 +827,8 @@ const (
 	// send / cron / timer / relay tool documentation in their native
 	// language. Translation coverage is en + zh for this PR; additional
 	// languages fall back to en automatically.
-	MsgAgentSendToolPrompt MsgKey = "agent_send_tool_prompt"
-	MsgAgentCronToolPrompt MsgKey = "agent_cron_tool_prompt"
+	MsgAgentSendToolPrompt  MsgKey = "agent_send_tool_prompt"
+	MsgAgentCronToolPrompt  MsgKey = "agent_cron_tool_prompt"
 	MsgAgentTimerToolPrompt MsgKey = "agent_timer_tool_prompt"
 	MsgAgentRelayToolPrompt MsgKey = "agent_relay_tool_prompt"
 )
@@ -5330,6 +5330,7 @@ Environment variables CC_PROJECT and CC_SESSION_KEY are already set, so the rela
 会话在群聊里可见,每个 bot 维护自己的 relay 会话。
 
 环境变量 CC_PROJECT 和 CC_SESSION_KEY 已经设置好,relay 知道用哪个群聊。`,
+	},
 
 	MsgExtPermPrefix: {
 		LangEnglish:            "[Hook] ",
@@ -5487,6 +5488,7 @@ Environment variables CC_PROJECT and CC_SESSION_KEY are already set, so the rela
 		LangJapanese:           "切替",
 		LangSpanish:            "Cambiar",
 	},
+}
 
 func (i *I18n) T(key MsgKey) string {
 	i.mu.RLock()

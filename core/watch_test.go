@@ -143,6 +143,36 @@ func TestRenderWatchCard(t *testing.T) {
 	}
 }
 
+func TestWatchCard_BindButtonRow(t *testing.T) {
+	e := NewEngine("test", nil, nil, "", LangEnglish)
+
+	card := e.renderWatchCard("key1")
+	if n := countCardActionValues(card, "act:/watch bind-groups"); n != 0 {
+		t.Fatalf("expected no bind-groups button while auto-group is disabled, got %d", n)
+	}
+	if n := countCardActionValues(card, "nav:/watch"); n != 1 {
+		t.Errorf("expected refresh button present, got %d", n)
+	}
+	if n := countCardActionValues(card, "act:/watch stop"); n != 1 {
+		t.Errorf("expected stop button present, got %d", n)
+	}
+
+	e.autoGroupMu.Lock()
+	e.autoGroupEnabled = true
+	e.autoGroupMu.Unlock()
+
+	card = e.renderWatchCard("key1")
+	if n := countCardActionValues(card, "act:/watch bind-groups"); n != 1 {
+		t.Fatalf("expected exactly one bind-groups button while auto-group is enabled, got %d", n)
+	}
+	if n := countCardActionValues(card, "nav:/watch"); n != 1 {
+		t.Errorf("expected refresh button to remain present, got %d", n)
+	}
+	if n := countCardActionValues(card, "act:/watch stop"); n != 1 {
+		t.Errorf("expected stop button to remain present, got %d", n)
+	}
+}
+
 func TestWatchStartStop(t *testing.T) {
 	e := NewEngine("test", nil, nil, "", LangEnglish)
 	p := &stubPlatformWatch{}

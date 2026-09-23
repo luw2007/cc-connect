@@ -315,10 +315,14 @@ func (e *Engine) renderWatchCard(sessionKey string) *Card {
 
 	title := fmt.Sprintf("Session Monitor — %s", time.Now().Format("15:04:05"))
 	cb := NewCard().Title(title, "blue").Markdown(sb.String())
-	cb.Buttons(
+	buttons := []CardButton{
 		DefaultBtn("🔄 Refresh", "nav:/watch"),
 		DangerBtn("⏹ Stop", "act:/watch stop"),
-	)
+	}
+	if e.isAutoGroupEnabled() {
+		buttons = append(buttons, DefaultBtn(e.i18n.T(MsgWatchBindBtn), "act:/watch bind-groups"))
+	}
+	cb.Buttons(buttons...)
 	return cb.Build()
 }
 
