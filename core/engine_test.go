@@ -174,6 +174,7 @@ type resultAgentSession struct {
 	events      chan Event
 	result      string
 	sendOnce    sync.Once
+	mu          sync.Mutex
 	sentPrompts []string
 }
 
@@ -185,7 +186,9 @@ func newResultAgentSession(result string) *resultAgentSession {
 }
 
 func (s *resultAgentSession) Send(prompt string, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+	s.mu.Lock()
 	s.sentPrompts = append(s.sentPrompts, prompt)
+	s.mu.Unlock()
 	s.sendOnce.Do(func() {
 		s.events <- Event{Type: EventResult, Content: s.result, Done: true}
 	})
@@ -2786,20 +2789,27 @@ func TestHandleMessage_UnknownSlashCommandForwardsWithoutNotice(t *testing.T) {
 	})
 
 	deadline := time.After(2 * time.Second)
+	var gotCmd string
 	for {
-		if len(agentSession.sentPrompts) == 1 && len(p.getSent()) == 1 {
+		agentSession.mu.Lock()
+		sp := len(agentSession.sentPrompts)
+		if sp > 0 {
+			gotCmd = agentSession.sentPrompts[0]
+		}
+		agentSession.mu.Unlock()
+		if sp == 1 && len(p.getSent()) == 1 {
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("timed out waiting for forwarded command, prompts=%v replies=%v", agentSession.sentPrompts, p.getSent())
+			t.Fatalf("timed out waiting for forwarded command, prompts=%v replies=%v", gotCmd, p.getSent())
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
 
-	if got := agentSession.sentPrompts[0]; got != "/see inspect this" {
-		t.Fatalf("agent prompt = %q, want unknown slash command unchanged", got)
+	if gotCmd != "/see inspect this" {
+		t.Fatalf("agent prompt = %q, want unknown slash command unchanged", gotCmd)
 	}
 	if got := p.getSent(); len(got) != 1 || got[0] != "agent reply" {
 		t.Fatalf("platform replies = %v, want only agent reply", got)

@@ -116,17 +116,24 @@ func newWorkspaceSkillsEngine(t *testing.T, p Platform) (*Engine, string, string
 	}
 	writeWorkspaceSkill(t, global, "global-skill", "Global instructions")
 	writeWorkspaceSkill(t, global, "shared-skill", "Wrong global instructions")
+	// Pre-resolve paths so internal normalizeWorkspacePath (which uses
+	// EvalSymlinks) produces keys matching the raw TempDir — macOS /var
+	// is a symlink to /private/var. Without this, override keys constructed
+	// from raw a/b diverge from the engine's resolved interactiveKey.
+	resolvedA := normalizeWorkspacePath(a)
+	resolvedB := normalizeWorkspacePath(b)
+	resolvedGlobal := normalizeWorkspacePath(global)
 	name := "workspace-skills-" + t.Name()
 	RegisterAgent(name, func(opts map[string]any) (Agent, error) {
-		return &workspaceSkillAgent{name: name, workDir: opts["work_dir"].(string), global: global}, nil
+		return &workspaceSkillAgent{name: name, workDir: opts["work_dir"].(string), global: resolvedGlobal}, nil
 	})
-	e := NewEngine("test", &workspaceSkillAgent{name: name, workDir: base, global: global}, []Platform{p}, filepath.Join(base, "sessions.json"), LangEnglish)
+	e := NewEngine("test", &workspaceSkillAgent{name: name, workDir: base, global: resolvedGlobal}, []Platform{p}, filepath.Join(base, "sessions.json"), LangEnglish)
 	e.SetMultiWorkspace(base, filepath.Join(base, "bindings.json"))
 	for channel, ws := range map[string]string{"a": a, "b": b} {
 		e.workspaceBindings.Bind("project:test", workspaceChannelKey(p.Name(), "oc_"+channel), channel, ws)
 	}
 	t.Cleanup(func() { _ = e.Stop() })
-	return e, a, b
+	return e, resolvedA, resolvedB
 }
 func skillMessage(platform, channel, content string) *Message {
 	return &Message{Platform: platform, SessionKey: platform + ":oc_" + channel + ":user", ChannelKey: "oc_" + channel, UserID: "user", Content: content, ReplyCtx: channel}
