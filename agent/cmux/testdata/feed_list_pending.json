@@ -1,0 +1,1 @@
+{"items":[{"id":"ITEM-PENDING","kind":"permissionRequest","source":"claude","status":"pending","request_id":"REQ-PENDING","tool_name":"Bash","tool_input":"{\"command\":\"go test ./agent/cmux/\"}","title":"Allow Bash?","workstream_id":"claude-SESSION-FIXTURE","created_at":"2026-07-26T07:57:32Z","updated_at":"2026-07-26T07:57:32Z"}]}
