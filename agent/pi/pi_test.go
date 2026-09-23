@@ -1747,7 +1747,7 @@ fi
 	defer cancel()
 	s := &piSession{cmd: scriptPath, workDir: t.TempDir(), events: make(chan core.Event, 8), ctx: ctx, cancel: cancel}
 	s.alive.Store(true)
-	if err := s.sendJSON("test", nil); err != nil {
+	if err := s.sendJSON("test", nil, nil); err != nil {
 		t.Fatalf("sendJSON: %v", err)
 	}
 
@@ -1777,7 +1777,7 @@ echo '{"type":"message_end","message":{"role":"assistant","errorMessage":"termin
 	defer cancel()
 	s := &piSession{cmd: scriptPath, workDir: t.TempDir(), events: make(chan core.Event, 8), ctx: ctx, cancel: cancel}
 	s.alive.Store(true)
-	if err := s.sendJSON("test", nil); err != nil {
+	if err := s.sendJSON("test", nil, nil); err != nil {
 		t.Fatalf("sendJSON: %v", err)
 	}
 

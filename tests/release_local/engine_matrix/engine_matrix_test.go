@@ -289,12 +289,11 @@ func TestCustomPromptCommandThroughReceiveMessage(t *testing.T) {
 	platform.waitTextContaining(t, "matrix response")
 }
 
-func TestUnknownSlashCommandNotifiesThenFallsThroughToAgent(t *testing.T) {
+func TestUnknownSlashCommandFallsThroughToAgent(t *testing.T) {
 	engine, agent, platform := newMatrixEngine(t)
 
 	receive(engine, platform, "/not-a-command keep this request")
 
-	platform.waitTextContaining(t, "forwarding")
 	records := agent.waitRecords(t, 1)
 	if !strings.Contains(records[0].prompt, "/not-a-command keep this request") {
 		t.Fatalf("unknown slash command should fall through to agent, got prompt %q", records[0].prompt)

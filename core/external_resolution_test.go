@@ -99,7 +99,7 @@ func TestEngine_WaitForPermissionResolution_UnblocksOnExternalNotify(t *testing.
 
 	done := make(chan struct{})
 	go func() {
-		e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m1", time.Now(), nil, sendDone, "ctx")
+		e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m1", time.Now(), nil, sendDone, "ctx", 0)
 		close(done)
 	}()
 
@@ -186,7 +186,7 @@ func TestEngine_EventPermissionResolved_ClearsMatchingPending(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m1", time.Now(), nil, sendDone, "ctx")
+		e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m1", time.Now(), nil, sendDone, "ctx", 0)
 		close(done)
 	}()
 
@@ -247,7 +247,7 @@ func TestEngine_EventPermissionResolved_IgnoresNonMatchingRequest(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m1", time.Now(), nil, sendDone, "ctx")
+		e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m1", time.Now(), nil, sendDone, "ctx", 0)
 		close(done)
 	}()
 
