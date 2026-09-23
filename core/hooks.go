@@ -24,6 +24,7 @@ const (
 	HookEventCronTriggered      HookEventType = "cron.triggered"
 	HookEventTimerTriggered     HookEventType = "timer.triggered"
 	HookEventPermissionRequested HookEventType = "permission.requested"
+	HookEventTurnCompleted      HookEventType = "turn.completed"
 	HookEventError              HookEventType = "error"
 )
 
@@ -263,6 +264,10 @@ func eventToEnv(e HookEvent) []string {
 	}
 	if e.Error != "" {
 		env = append(env, "CC_HOOK_ERROR="+e.Error)
+	}
+	for k, v := range e.Extra {
+		envKey := "CC_HOOK_EXTRA_" + strings.ToUpper(strings.ReplaceAll(k, ".", "_"))
+		env = append(env, envKey+"="+fmt.Sprint(v))
 	}
 	return env
 }

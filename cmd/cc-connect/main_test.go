@@ -72,7 +72,7 @@ func TestResolveResetOnIdle(t *testing.T) {
 		{
 			name:          "unset applies default and reports defaulted",
 			configured:    nil,
-			wantDuration:  time.Duration(defaultResetOnIdleMins) * time.Minute,
+			wantDuration:  30 * time.Minute,
 			wantDefaulted: true,
 		},
 		{

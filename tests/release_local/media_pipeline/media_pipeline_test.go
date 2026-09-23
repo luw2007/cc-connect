@@ -295,6 +295,7 @@ func TestQueuedMessagePreservesFiles(t *testing.T) {
 	if len(records[1].files) != 1 || records[1].files[0].FileName != "queued.txt" || string(records[1].files[0].Data) != "queued-file" {
 		t.Fatalf("queued file not preserved: %#v", records[1].files)
 	}
+	platform.waitTextContaining(t, "media ok")
 }
 
 func TestSendToSessionWithAttachmentsDeliversTextImagesAndFiles(t *testing.T) {
