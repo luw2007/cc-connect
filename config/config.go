@@ -218,6 +218,8 @@ type StreamPreviewConfig struct {
 	IntervalMs        *int     `toml:"interval_ms"`                  // min ms between updates; default 1500
 	MinDeltaChars     *int     `toml:"min_delta_chars"`              // min new chars before update; default 30
 	MaxChars          *int     `toml:"max_chars"`                    // max preview length; default 2000
+	RichIntervalMs    *int     `toml:"rich_interval_ms"`
+	RichFinalDrainMs  *int     `toml:"rich_final_drain_ms"`
 }
 
 // InstantReplyConfig controls the immediate confirmation reply sent when a message
@@ -1044,6 +1046,18 @@ func (c *Config) validate() error {
 func (c *Config) validateInternal(permissive bool) error {
 	if err := validateDisplayConfig("display", &c.Display); err != nil {
 		return err
+	}
+	for _, check := range []struct {
+		name     string
+		value    *int
+		min, max int
+	}{
+		{"rich_interval_ms", c.StreamPreview.RichIntervalMs, 0, 5000},
+		{"rich_final_drain_ms", c.StreamPreview.RichFinalDrainMs, 0, 10000},
+	} {
+		if check.value != nil && (*check.value < check.min || *check.value > check.max) {
+			return fmt.Errorf("config: stream_preview.%s must be in [%d,%d]", check.name, check.min, check.max)
+		}
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AttachmentSend)) {
 	case "", "on", "off":

@@ -2076,8 +2076,10 @@ type stubRichCardSilentPlatform struct {
 	previewStarts []string
 	streamTexts   []string
 	updates       []string
+	updateHandles []any
 	deleteCount   int
 	nextHandleSeq int
+	updateErr     error
 }
 
 func (p *stubRichCardSilentPlatform) BuildRichCard(status CardStatus, _ string, steps []ToolStep, markdown string, _ bool, _ string) string {
@@ -2092,11 +2094,12 @@ func (p *stubRichCardSilentPlatform) SendPreviewStart(_ context.Context, _ any, 
 	return fmt.Sprintf("handle-%d", p.nextHandleSeq), nil
 }
 
-func (p *stubRichCardSilentPlatform) UpdateMessage(_ context.Context, _ any, content string) error {
+func (p *stubRichCardSilentPlatform) UpdateMessage(_ context.Context, handle any, content string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.updates = append(p.updates, content)
-	return nil
+	p.updateHandles = append(p.updateHandles, handle)
+	return p.updateErr
 }
 
 func (p *stubRichCardSilentPlatform) StreamRichCardText(_ context.Context, _ any, fullText string) error {
@@ -2121,6 +2124,12 @@ func (p *stubRichCardSilentPlatform) snapshot() (starts, streams, updates []stri
 	updates = append(updates, p.updates...)
 	deletes = p.deleteCount
 	return
+}
+
+func (p *stubRichCardSilentPlatform) updateSnapshot() ([]any, []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]any(nil), p.updateHandles...), append([]string(nil), p.updates...)
 }
 
 type stubRichCardResolverPlatform struct {
@@ -2410,6 +2419,123 @@ func TestProcessInteractiveEvents_RichCard_ToolThenNoReply(t *testing.T) {
 	}
 	if strings.Contains(last, "NO_REPLY") {
 		t.Fatalf("finalize should not include NO_REPLY in body, got %q", last)
+	}
+}
+
+func newRichCardEngineTest(t *testing.T, p *stubRichCardSilentPlatform, cfg StreamPreviewCfg) (*Engine, *Session, *interactiveState, *controllableAgentSession, string) {
+	t.Helper()
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.SetDisplayConfig(DisplayCfg{Mode: "full", CardMode: "rich", ThinkingMessages: true, ToolMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500})
+	e.SetStreamPreviewCfg(cfg)
+	key := "rich-test:" + t.Name()
+	session := e.sessions.GetOrCreateActive(key)
+	agentSession := newControllableSession("s-" + t.Name())
+	state := &interactiveState{agentSession: agentSession, platform: p, replyCtx: "ctx"}
+	e.interactiveStates[key] = state
+	return e, session, state, agentSession, key
+}
+
+func TestProcessInteractiveEvents_RichCardEventTextBurstCoalescesAndFinalBodyComplete(t *testing.T) {
+	p := &stubRichCardSilentPlatform{stubPlatformEngine: stubPlatformEngine{n: "rich"}}
+	cfg := DefaultStreamPreviewCfg()
+	cfg.RichIntervalMs = 100
+	e, session, state, as, key := newRichCardEngineTest(t, p, cfg)
+	var body strings.Builder
+	var events []Event
+	for i := 0; i < 10; i++ {
+		chunk := fmt.Sprintf("%02d", i)
+		body.WriteString(chunk)
+		events = append(events, Event{Type: EventText, Content: chunk})
+	}
+	events = append(events, Event{Type: EventResult, Content: body.String(), Done: true})
+	go func() {
+		for _, event := range events {
+			as.events <- event
+		}
+	}()
+	e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m", time.Now(), nil, nil, state.replyCtx)
+	_, streams, updates, _ := p.snapshot()
+	if len(streams) >= 10 {
+		t.Fatalf("stream PUTs=%d, want coalesced below 10", len(streams))
+	}
+	if len(updates) == 0 || !strings.Contains(updates[len(updates)-1], body.String()) || !strings.Contains(updates[len(updates)-1], "status=done") {
+		t.Fatalf("terminal update incomplete: %v", updates)
+	}
+}
+
+func TestProcessInteractiveEvents_RichCardTerminalUpdaterFailureSendsFailOpenOnce(t *testing.T) {
+	p := &stubRichCardSilentPlatform{stubPlatformEngine: stubPlatformEngine{n: "rich"}, updateErr: errors.New("terminal failed")}
+	cfg := DefaultStreamPreviewCfg()
+	cfg.RichIntervalMs = 1
+	e, session, state, as, key := newRichCardEngineTest(t, p, cfg)
+	as.events <- Event{Type: EventText, Content: "answer"}
+	as.events <- Event{Type: EventResult, Content: "answer", Done: true}
+	e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m", time.Now(), nil, nil, state.replyCtx)
+	if got := p.getSent(); len(got) != 1 || !strings.Contains(got[0], "status=done") {
+		t.Fatalf("fail-open sends=%v, want one Done card", got)
+	}
+}
+
+func TestProcessInteractiveEvents_RichCardTerminalNotRetryableHasNoEngineBackoff(t *testing.T) {
+	p := &stubRichCardSilentPlatform{stubPlatformEngine: stubPlatformEngine{n: "rich"}, updateErr: ErrNotRetryable}
+	e, session, state, as, key := newRichCardEngineTest(t, p, DefaultStreamPreviewCfg())
+	as.events <- Event{Type: EventText, Content: "answer"}
+	as.events <- Event{Type: EventResult, Content: "answer", Done: true}
+	started := time.Now()
+	e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m", time.Now(), nil, nil, state.replyCtx)
+	if elapsed := time.Since(started); elapsed >= 200*time.Millisecond {
+		t.Fatalf("engine retried/backed off: %v", elapsed)
+	}
+	if got := p.getSent(); len(got) != 1 {
+		t.Fatalf("fail-open sends=%v", got)
+	}
+}
+
+func TestProcessInteractiveEvents_RichCardQueuedTurnFinalizesOldHandle(t *testing.T) {
+	p := &stubRichCardSilentPlatform{stubPlatformEngine: stubPlatformEngine{n: "rich"}}
+	sess := newQueuingSession("rich-queue")
+	e := NewEngine("test", &controllableAgent{nextSession: sess}, []Platform{p}, "", LangEnglish)
+	e.SetDisplayConfig(DisplayCfg{Mode: "full", CardMode: "rich", ThinkingMessages: true, ToolMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500})
+	key := "rich:queue"
+	session := e.sessions.GetOrCreateActive(key)
+	state := &interactiveState{agentSession: sess, platform: p, replyCtx: "ctx1", pendingMessages: []queuedMessage{{platform: p, replyCtx: "ctx2", content: "second"}}}
+	e.interactiveStates[key] = state
+	go func() {
+		sess.events <- Event{Type: EventText, Content: "first"}
+		sess.events <- Event{Type: EventResult, Content: "first", Done: true}
+		for {
+			sess.sendMu.Lock()
+			n := len(sess.sendCalls)
+			sess.sendMu.Unlock()
+			if n > 0 {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		sess.events <- Event{Type: EventResult, Content: "second-answer", Done: true}
+	}()
+	e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m1", time.Now(), nil, nil, "ctx1")
+	handles, updates := p.updateSnapshot()
+	found := false
+	for i, h := range handles {
+		if h == "handle-1" && strings.Contains(updates[i], "status=done") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("old handle was not finalized Done: handles=%v updates=%v", handles, updates)
+	}
+}
+
+func TestProcessInteractiveEvents_RichCardSilentReplyDoesNotRemainWorking(t *testing.T) {
+	p := &stubRichCardSilentPlatform{stubPlatformEngine: stubPlatformEngine{n: "rich"}}
+	e, session, state, as, key := newRichCardEngineTest(t, p, DefaultStreamPreviewCfg())
+	as.events <- Event{Type: EventToolUse, ToolName: "Bash", ToolInput: "true"}
+	as.events <- Event{Type: EventResult, Content: "NO_REPLY", Done: true}
+	e.processInteractiveEvents(context.Background(), state, session, e.sessions, key, "m", time.Now(), nil, nil, state.replyCtx)
+	_, _, updates, _ := p.snapshot()
+	if len(updates) == 0 || !strings.Contains(updates[len(updates)-1], "status=done") {
+		t.Fatalf("silent rich card remained Working: %v", updates)
 	}
 }
 

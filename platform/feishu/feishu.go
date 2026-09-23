@@ -3,12 +3,15 @@ package feishu
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -121,6 +124,7 @@ type Platform struct {
 	appSecret                  string
 	progressStyle              string
 	useInteractiveCard         bool
+	streamingCard              streamingCardConfig
 	self                       core.Platform
 	reactionEmoji              string
 	doneEmoji                  string
@@ -131,6 +135,7 @@ type Platform struct {
 	respondToAtEveryoneAndHere bool
 	shareSessionInChannel      bool
 	threadIsolation            bool
+	replyInThread              bool
 	// noReplyToTrigger: when true, send via Create instead of Im.Message.Reply (no quote to the user's message).
 	noReplyToTrigger bool
 	resolveMentions  bool
@@ -311,6 +316,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	respondToAtEveryoneAndHere, _ := opts["respond_to_at_everyone_and_here"].(bool)
 	shareSessionInChannel, _ := opts["share_session_in_channel"].(bool)
 	threadIsolation, _ := opts["thread_isolation"].(bool)
+	replyInThread, _ := opts["reply_in_thread"].(bool)
 	resolveMentionsOpt, _ := opts["resolve_mentions"].(bool)
 	noReplyToTrigger := false
 	if v, ok := opts["reply_to_trigger"].(bool); ok && !v {
@@ -357,6 +363,30 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	if v, ok := opts["enable_feishu_card"].(bool); ok {
 		useInteractiveCard = v
 	}
+	streamingCard := defaultStreamingCardConfig()
+	if raw, ok := opts["card_print_frequency_ms"]; ok {
+		v, err := coerceMilliseconds(raw)
+		if err != nil || v < 10 || v > 2000 {
+			return nil, fmt.Errorf("%s: card_print_frequency_ms must be in [10,2000]", name)
+		}
+		streamingCard.PrintFrequencyMs = int(v)
+	}
+	if raw, ok := opts["card_print_step"]; ok {
+		v, err := coerceMilliseconds(raw)
+		if err != nil || v < 1 || v > 20 {
+			return nil, fmt.Errorf("%s: card_print_step must be in [1,20]", name)
+		}
+		streamingCard.PrintStep = int(v)
+	}
+	if raw, ok := opts["card_print_strategy"]; ok {
+		v, ok := raw.(string)
+		if !ok || (v != "fast" && v != "delay" && v != "") {
+			return nil, fmt.Errorf("%s: card_print_strategy must be fast or delay", name)
+		}
+		if v != "" {
+			streamingCard.PrintStrategy = v
+		}
+	}
 
 	imageBatchWindow := defaultImageBatchWindow
 	if raw, ok := opts["image_batch_window_ms"]; ok {
@@ -393,6 +423,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		appSecret:                  appSecret,
 		progressStyle:              progressStyle,
 		useInteractiveCard:         useInteractiveCard,
+		streamingCard:              streamingCard,
 		reactionEmoji:              reactionEmoji,
 		doneEmoji:                  doneEmoji,
 		allowFrom:                  allowFrom,
@@ -402,6 +433,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		respondToAtEveryoneAndHere: respondToAtEveryoneAndHere,
 		shareSessionInChannel:      shareSessionInChannel,
 		threadIsolation:            threadIsolation,
+		replyInThread:              replyInThread,
 		resolveMentions:            resolveMentionsOpt,
 		noReplyToTrigger:           noReplyToTrigger,
 		client:                     lark.NewClient(appID, appSecret, clientOpts...),
@@ -3642,7 +3674,13 @@ func (p *Platform) shouldReplyInThread(rc replyContext) bool {
 	if rc.messageID == "" {
 		return false
 	}
-	return p.threadIsolation && isThreadSessionKey(rc.sessionKey)
+	if p.threadIsolation && isThreadSessionKey(rc.sessionKey) {
+		return true
+	}
+	if p.replyInThread && strings.HasPrefix(rc.chatID, "oc_") {
+		return true
+	}
+	return false
 }
 
 // shouldUseThreadOrReplyAPI is true when we should call Im.Message.Reply (optionally with ReplyInThread).
@@ -3660,12 +3698,15 @@ func (p *Platform) sendNewMessageToChat(ctx context.Context, rc replyContext, ms
 	return p.createMessage(ctx, rc.chatID, msgType, content, "send")
 }
 
-func (p *Platform) buildReplyMessageReqBody(rc replyContext, msgType, content string) *larkim.ReplyMessageReqBody {
+func (p *Platform) buildReplyMessageReqBody(rc replyContext, msgType, content string, uuids ...string) *larkim.ReplyMessageReqBody {
 	body := larkim.NewReplyMessageReqBodyBuilder().
 		MsgType(msgType).
 		Content(content)
 	if p.shouldReplyInThread(rc) {
 		body.ReplyInThread(true)
+	}
+	if len(uuids) > 0 && uuids[0] != "" {
+		body.Uuid(uuids[0])
 	}
 	return body.Build()
 }
@@ -3710,6 +3751,83 @@ func (p *Platform) createMessage(ctx context.Context, chatID, msgType, content, 
 			return nil
 		})
 	})
+}
+
+// CreateThreadAnchor sends a text message into the chat and returns its message ID.
+// This message becomes the root of a new thread.
+func (p *Platform) CreateThreadAnchor(ctx context.Context, replyCtx any, text string) (string, error) {
+	rc, ok := replyCtx.(replyContext)
+	if !ok {
+		return "", fmt.Errorf("%s: invalid reply context type %T", p.tag(), replyCtx)
+	}
+	if rc.chatID == "" {
+		return "", fmt.Errorf("%s: chatID is empty", p.tag())
+	}
+
+	content := fmt.Sprintf(`{"text":"%s"}`, text)
+	req := larkim.NewCreateMessageReqBuilder().
+		ReceiveIdType(larkim.ReceiveIdTypeChatId).
+		Body(larkim.NewCreateMessageReqBodyBuilder().
+			ReceiveId(rc.chatID).
+			MsgType(larkim.MsgTypeText).
+			Content(content).
+			Build()).
+		Build()
+
+	var msgID string
+	err := p.withTransientRetry(ctx, "create thread anchor", func() error {
+		return p.withFreshTenantAccessTokenRetry(ctx, "create thread anchor", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+			resp, err := client.Im.Message.Create(ctx, req, options...)
+			if err != nil {
+				return fmt.Errorf("%s: create thread anchor api call: %w", p.tag(), err)
+			}
+			if !resp.Success() {
+				return fmt.Errorf("%s: create thread anchor failed code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+			}
+			if resp.Data != nil && resp.Data.MessageId != nil {
+				msgID = *resp.Data.MessageId
+			}
+			return nil
+		})
+	})
+	return msgID, err
+}
+
+// SendCardInThread sends a card as a threaded reply to rootMsgID and returns the card's message ID.
+func (p *Platform) SendCardInThread(ctx context.Context, replyCtx any, rootMsgID string, card *core.Card) (string, error) {
+	rc, ok := replyCtx.(replyContext)
+	if !ok {
+		return "", fmt.Errorf("%s: invalid reply context type %T", p.tag(), replyCtx)
+	}
+
+	cardJSON := renderCard(card, rc.sessionKey)
+	body := larkim.NewReplyMessageReqBodyBuilder().
+		MsgType(larkim.MsgTypeInteractive).
+		Content(cardJSON).
+		ReplyInThread(true).
+		Build()
+	req := larkim.NewReplyMessageReqBuilder().
+		MessageId(rootMsgID).
+		Body(body).
+		Build()
+
+	var msgID string
+	err := p.withTransientRetry(ctx, "send card in thread", func() error {
+		return p.withFreshTenantAccessTokenRetry(ctx, "send card in thread", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+			resp, err := client.Im.Message.Reply(ctx, req, options...)
+			if err != nil {
+				return fmt.Errorf("%s: send card in thread api call: %w", p.tag(), err)
+			}
+			if !resp.Success() {
+				return fmt.Errorf("%s: send card in thread failed code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+			}
+			if resp.Data != nil && resp.Data.MessageId != nil {
+				msgID = *resp.Data.MessageId
+			}
+			return nil
+		})
+	})
+	return msgID, err
 }
 
 func (p *Platform) withFreshTenantAccessTokenRetry(ctx context.Context, operation string, fn feishuRequestFunc) error {
@@ -4525,7 +4643,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 	if p.shouldUseThreadOrReplyAPI(rc) {
 		req := larkim.NewReplyMessageReqBuilder().
 			MessageId(rc.messageID).
-			Body(p.buildReplyMessageReqBody(rc, larkim.MsgTypeInteractive, sendContent)).
+			Body(p.buildReplyMessageReqBody(rc, larkim.MsgTypeInteractive, sendContent, buildDeliveryUUID(p.platformName, chatID, rc.messageID, "preview-start"))).
 			Build()
 		var resp *larkim.ReplyMessageResp
 		if err := p.withTransientRetry(ctx, "send preview", func() error {
@@ -4553,6 +4671,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 				ReceiveId(chatID).
 				MsgType(larkim.MsgTypeInteractive).
 				Content(sendContent).
+				Uuid(buildDeliveryUUID(p.platformName, chatID, rc.messageID, "preview-start")).
 				Build()).
 			Build()
 		var resp *larkim.CreateMessageResp
@@ -4583,6 +4702,56 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 	return &feishuPreviewHandle{messageID: msgID, chatID: chatID, cardID: cardID}, nil
 }
 
+func buildDeliveryUUID(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1f")))
+	return "ccc_" + hex.EncodeToString(sum[:])[:40]
+}
+
+const maxCardRetryAfter = 2 * time.Second
+
+func cardRetryAfter(resp *larkcore.ApiResp) (time.Duration, bool) {
+	if resp == nil || resp.Header == nil {
+		return 0, false
+	}
+	raw := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if raw == "" {
+		return 0, false
+	}
+	secs, err := strconv.ParseFloat(raw, 64)
+	if err != nil || secs < 0 || math.IsNaN(secs) || math.IsInf(secs, 0) {
+		return 0, false
+	}
+	d := time.Duration(secs * float64(time.Second))
+	if d > maxCardRetryAfter {
+		d = maxCardRetryAfter
+	}
+	return d, true
+}
+func (p *Platform) withCardAPIRetry(ctx context.Context, op string, call func() (*larkcore.ApiResp, error)) (*larkcore.ApiResp, error) {
+	var resp *larkcore.ApiResp
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err = call()
+		if err == nil && resp != nil && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
+			return resp, nil
+		}
+		if attempt == 2 {
+			break
+		}
+		delay := time.Duration(400*(1<<attempt)) * time.Millisecond
+		if ra, ok := cardRetryAfter(resp); ok && ra > delay {
+			delay = ra
+		}
+		slog.Debug(p.tag()+": card api retry", "op", op, "attempt", attempt+1, "delay", delay)
+		select {
+		case <-ctx.Done():
+			return resp, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return resp, err
+}
+
 // createCardEntity calls the cardkit-v1 Create Card Entity API
 // (POST /open-apis/cardkit/v1/cards) and returns the card_id.
 //
@@ -4596,12 +4765,16 @@ func (p *Platform) createCardEntity(ctx context.Context, cardJSON string) (strin
 		"type": "card_json",
 		"data": cardJSON,
 	}
-	var apiResp *larkcore.ApiResp
-	if err := p.withFreshTenantAccessTokenRetry(ctx, "create card entity", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-		var err error
-		apiResp, err = client.Post(ctx, "/open-apis/cardkit/v1/cards", body, larkcore.AccessTokenTypeTenant, options...)
-		return err
-	}); err != nil {
+	apiResp, err := p.withCardAPIRetry(ctx, "create card entity", func() (*larkcore.ApiResp, error) {
+		var result *larkcore.ApiResp
+		err := p.withFreshTenantAccessTokenRetry(ctx, "create card entity", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+			var callErr error
+			result, callErr = client.Post(ctx, "/open-apis/cardkit/v1/cards", body, larkcore.AccessTokenTypeTenant, options...)
+			return callErr
+		})
+		return result, err
+	})
+	if err != nil {
 		return "", fmt.Errorf("%s: create card entity: %w", p.tag(), err)
 	}
 	if apiResp == nil || apiResp.StatusCode != http.StatusOK {
@@ -4658,12 +4831,16 @@ func (p *Platform) StreamRichCardText(ctx context.Context, previewHandle any, fu
 		"sequence": h.sequence,
 	}
 
-	var apiResp *larkcore.ApiResp
-	if err := p.withFreshTenantAccessTokenRetry(ctx, "stream rich card text", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-		var err error
-		apiResp, err = client.Put(ctx, apiPath, body, larkcore.AccessTokenTypeTenant, options...)
-		return err
-	}); err != nil {
+	apiResp, err := p.withCardAPIRetry(ctx, "stream rich card text", func() (*larkcore.ApiResp, error) {
+		var result *larkcore.ApiResp
+		err := p.withFreshTenantAccessTokenRetry(ctx, "stream rich card text", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+			var callErr error
+			result, callErr = client.Put(ctx, apiPath, body, larkcore.AccessTokenTypeTenant, options...)
+			return callErr
+		})
+		return result, err
+	})
+	if err != nil {
 		return fmt.Errorf("%s: stream rich card text: %w", p.tag(), err)
 	}
 	if apiResp == nil || apiResp.StatusCode != http.StatusOK {
@@ -4805,12 +4982,16 @@ func (p *Platform) updateCardEntity(ctx context.Context, h *feishuPreviewHandle,
 		},
 		"sequence": seq,
 	}
-	var apiResp *larkcore.ApiResp
-	if err := p.withFreshTenantAccessTokenRetry(ctx, "update card entity", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-		var err error
-		apiResp, err = client.Put(ctx, apiPath, body, larkcore.AccessTokenTypeTenant, options...)
-		return err
-	}); err != nil {
+	apiResp, err := p.withCardAPIRetry(ctx, "update card entity", func() (*larkcore.ApiResp, error) {
+		var result *larkcore.ApiResp
+		err := p.withFreshTenantAccessTokenRetry(ctx, "update card entity", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+			var callErr error
+			result, callErr = client.Put(ctx, apiPath, body, larkcore.AccessTokenTypeTenant, options...)
+			return callErr
+		})
+		return result, err
+	})
+	if err != nil {
 		return fmt.Errorf("%s: update card entity: %w", p.tag(), err)
 	}
 	if apiResp == nil || apiResp.StatusCode != http.StatusOK {
@@ -4826,6 +5007,57 @@ func (p *Platform) updateCardEntity(ctx context.Context, h *feishuPreviewHandle,
 	if resp.Code != 0 {
 		return fmt.Errorf("%s: %w", p.tag(), classifyFeishuCardAPIError("update card entity", resp.Code, resp.Msg))
 	}
+	return nil
+}
+
+func (p *Platform) CreateGroupChat(ctx context.Context, name, description string, ownerUserID string) (string, error) {
+	body := larkim.NewCreateChatReqBodyBuilder().
+		Name(name).
+		Description(description).
+		ChatMode("group").
+		ChatType("private")
+	if ownerUserID != "" {
+		body = body.OwnerId(ownerUserID)
+	}
+	req := larkim.NewCreateChatReqBuilder().
+		UserIdType("open_id").
+		SetBotManager(true).
+		Body(body.Build()).
+		Build()
+
+	resp, err := p.client.Im.Chat.Create(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("feishu: create group chat: %w", err)
+	}
+	if !resp.Success() {
+		return "", fmt.Errorf("feishu: create group chat: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return *resp.Data.ChatId, nil
+}
+
+func (p *Platform) DissolveGroupChat(ctx context.Context, chatID string) error {
+	req := larkim.NewDeleteChatReqBuilder().ChatId(chatID).Build()
+	resp, err := p.client.Im.Chat.Delete(ctx, req)
+	if err != nil {
+		return fmt.Errorf("feishu: dissolve group: %w", err)
+	}
+	if !resp.Success() {
+		return fmt.Errorf("feishu: dissolve group: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return nil
+}
+
+func (p *Platform) RenameGroupChat(ctx context.Context, chatID, newName string) error {
+	body := larkim.NewUpdateChatReqBodyBuilder().Name(newName).Build()
+	req := larkim.NewUpdateChatReqBuilder().ChatId(chatID).Body(body).Build()
+	resp, err := p.client.Im.Chat.Update(ctx, req)
+	if err != nil {
+		return fmt.Errorf("feishu: rename group chat: %w", err)
+	}
+	if !resp.Success() {
+		return fmt.Errorf("feishu: rename group chat: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	p.chatNameCache.Store(chatID, newName)
 	return nil
 }
 
@@ -5195,7 +5427,7 @@ func (e *feishuCardAPIError) Is(target error) bool {
 	switch target {
 	case errFeishuCardRateLimited:
 		return e.Code == 230020
-	case errFeishuCardTableLimit:
+	case errFeishuCardTableLimit, core.ErrNotRetryable:
 		return e.Code == 230099 && e.SubCode == 11310 && strings.Contains(strings.ToLower(e.Msg), "table number over limit")
 	default:
 		return false
@@ -6486,13 +6718,32 @@ func buildRichPanel(title string, expanded bool, elements []map[string]any) map[
 	}
 }
 
+type streamingCardConfig struct {
+	PrintFrequencyMs, PrintStep int
+	PrintStrategy               string
+}
+
+func defaultStreamingCardConfig() streamingCardConfig { return streamingCardConfig{60, 2, "fast"} }
+func (c streamingCardConfig) payload() map[string]any {
+	per := func(v int) map[string]any { return map[string]any{"default": v, "android": v, "ios": v, "pc": v} }
+	strategy := c.PrintStrategy
+	if strategy == "" {
+		strategy = "fast"
+	}
+	return map[string]any{"print_frequency_ms": per(c.PrintFrequencyMs), "print_step": per(c.PrintStep), "print_strategy": strategy}
+}
+
 const maxRichCardJSONBytes = 28000
 
 // buildRichCard renders a Card 2.0 "single-card" turn with collapsible
 // reasoning/tool panels, streaming markdown body, status-colored header, and a
 // pre-composed multi-line statusFooter (engine-owned, includes elapsed).
-func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, markdown string, streaming bool, statusFooter string) string {
-	b, err := buildRichCardJSONBytes(status, steps, markdown, streaming, statusFooter)
+func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, markdown string, streaming bool, statusFooter string, configs ...streamingCardConfig) string {
+	sc := defaultStreamingCardConfig()
+	if len(configs) > 0 {
+		sc = configs[0]
+	}
+	b, err := buildRichCardJSONBytes(status, steps, markdown, streaming, statusFooter, sc)
 	if err != nil {
 		slog.Debug("feishu: build rich card marshal failed, fallback to basic card", "error", err)
 		return buildCardJSONWithStatus(markdown, status)
@@ -6514,7 +6765,7 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 		{perLane: 3, textLen: 80},
 	} {
 		compactSteps := compactRichStepsForCardSize(steps, limit.perLane, limit.textLen)
-		compact, err := buildRichCardJSONBytes(status, compactSteps, markdown, streaming, statusFooter)
+		compact, err := buildRichCardJSONBytes(status, compactSteps, markdown, streaming, statusFooter, sc)
 		if err == nil && len(compact) <= maxRichCardJSONBytes {
 			slog.Debug("feishu: rich card exceeded size limit, compacted panels",
 				"original_size", len(b),
@@ -6534,7 +6785,11 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 	return buildCardJSONWithStatus(fallbackMarkdown, status)
 }
 
-func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markdown string, streaming bool, statusFooter string) ([]byte, error) {
+func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markdown string, streaming bool, statusFooter string, configs ...streamingCardConfig) ([]byte, error) {
+	sc := defaultStreamingCardConfig()
+	if len(configs) > 0 {
+		sc = configs[0]
+	}
 	reasoningSteps, toolSteps := splitRichStepsByLane(steps)
 	panelMaps := make([]map[string]any, 0, 2)
 	if len(reasoningSteps) > 0 {
@@ -6608,13 +6863,15 @@ func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markd
 		headerTitle = pickThinkingVerb()
 	}
 
+	cardConfig := map[string]any{"update_multi": true, "enable_forward_interaction": true}
+	// Terminal cards intentionally omit streaming_mode and streaming_config entirely (absent == false).
+	if streaming {
+		cardConfig["streaming_mode"] = true
+		cardConfig["streaming_config"] = sc.payload()
+	}
 	card := map[string]any{
 		"schema": "2.0",
-		"config": map[string]any{
-			"streaming_mode":             streaming,
-			"update_multi":               true,
-			"enable_forward_interaction": true,
-		},
+		"config": cardConfig,
 		"header": map[string]any{
 			"template": headerTemplate,
 			"title":    map[string]any{"tag": "plain_text", "content": headerTitle},
@@ -6717,7 +6974,7 @@ func splitMarkdownByTables(md string, maxTables int) []string {
 // statusFooter (multi-line, '\n'-separated) and passes it through; the renderer
 // splits it back into one dim notation block per line.
 func (p *Platform) BuildRichCard(status core.CardStatus, title string, steps []core.ToolStep, markdown string, streaming bool, statusFooter string) string {
-	return buildRichCard(status, title, steps, markdown, streaming, statusFooter)
+	return buildRichCard(status, title, steps, markdown, streaming, statusFooter, p.streamingCard)
 }
 
 // SplitMarkdownByTables implements core.MarkdownTableSplitter.

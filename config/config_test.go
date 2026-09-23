@@ -563,6 +563,51 @@ func TestValidateProjectDisplayConfig(t *testing.T) {
 	}
 }
 
+func TestStreamPreviewRichConfig_BackwardCompatibleAndWired(t *testing.T) {
+	t.Run("old config", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte(baseConfigTOML), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.StreamPreview.RichIntervalMs != nil || cfg.StreamPreview.RichFinalDrainMs != nil {
+			t.Fatalf("unexpected fields: %+v", cfg.StreamPreview)
+		}
+	})
+	t.Run("new fields", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		data := baseConfigTOML + "\n[stream_preview]\nrich_interval_ms=321\nrich_final_drain_ms=987\n"
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.StreamPreview.RichIntervalMs == nil || *cfg.StreamPreview.RichIntervalMs != 321 || cfg.StreamPreview.RichFinalDrainMs == nil || *cfg.StreamPreview.RichFinalDrainMs != 987 {
+			t.Fatalf("not wired: %+v", cfg.StreamPreview)
+		}
+	})
+}
+
+func TestStreamPreviewRichConfig_RejectsOutOfRange(t *testing.T) {
+	for _, tc := range []struct{ name, line string }{{"interval", "rich_interval_ms=5001"}, {"drain", "rich_final_drain_ms=10001"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			data := baseConfigTOML + "\n[stream_preview]\n" + tc.line + "\n"
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Fatalf("Load accepted %s", tc.line)
+			}
+		})
+	}
+}
+
 func TestLoad_DefaultsDataDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

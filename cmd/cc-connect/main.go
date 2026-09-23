@@ -694,6 +694,12 @@ func main() {
 			if cfg.StreamPreview.MaxChars != nil {
 				spcfg.MaxChars = *cfg.StreamPreview.MaxChars
 			}
+			if cfg.StreamPreview.RichIntervalMs != nil {
+				spcfg.RichIntervalMs = *cfg.StreamPreview.RichIntervalMs
+			}
+			if cfg.StreamPreview.RichFinalDrainMs != nil {
+				spcfg.RichFinalDrainMs = *cfg.StreamPreview.RichFinalDrainMs
+			}
 			if cfg.StreamPreview.DisabledPlatforms != nil {
 				spcfg.DisabledPlatforms = cfg.StreamPreview.DisabledPlatforms
 			}

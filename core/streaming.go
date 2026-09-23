@@ -9,13 +9,35 @@ import (
 )
 
 // StreamPreviewCfg controls the streaming preview behavior.
+const (
+	defaultRichIntervalMs   = 200
+	defaultRichFinalDrainMs = 900
+	richTerminalBudget      = 5 * time.Second
+)
+
 type StreamPreviewCfg struct {
 	Enabled           bool     // global toggle
 	DisabledPlatforms []string // platforms where streaming preview is disabled (e.g. "feishu")
 	IntervalMs        int      // minimum ms between updates (default 1500)
 	MinDeltaChars     int      // minimum new chars before sending an update (default 30)
 	MaxChars          int      // max preview length (default 2000)
+	RichIntervalMs    int
+	RichFinalDrainMs  int
 }
+
+func (c StreamPreviewCfg) RichInterval() time.Duration {
+	if c.RichIntervalMs <= 0 {
+		return defaultRichIntervalMs * time.Millisecond
+	}
+	return time.Duration(c.RichIntervalMs) * time.Millisecond
+}
+func (c StreamPreviewCfg) RichFinalDrain() time.Duration {
+	if c.RichFinalDrainMs <= 0 {
+		return defaultRichFinalDrainMs * time.Millisecond
+	}
+	return time.Duration(c.RichFinalDrainMs) * time.Millisecond
+}
+func (c StreamPreviewCfg) RichTerminalBudget() time.Duration { return richTerminalBudget }
 
 // DefaultStreamPreviewCfg returns sensible defaults.
 func DefaultStreamPreviewCfg() StreamPreviewCfg {
@@ -25,6 +47,8 @@ func DefaultStreamPreviewCfg() StreamPreviewCfg {
 		IntervalMs:        1500,
 		MinDeltaChars:     30,
 		MaxChars:          2000,
+		RichIntervalMs:    defaultRichIntervalMs,
+		RichFinalDrainMs:  defaultRichFinalDrainMs,
 	}
 }
 
