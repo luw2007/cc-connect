@@ -52,6 +52,8 @@ type Agent struct {
 	mu              sync.RWMutex
 }
 
+var _ core.AllSessionsLister = (*Agent)(nil)
+
 func New(opts map[string]any) (core.Agent, error) {
 	workDir, _ := opts["work_dir"].(string)
 	if workDir == "" {
@@ -514,7 +516,15 @@ func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error)
 	codexHome := a.codexHome
 	workDir := a.workDir
 	a.mu.RUnlock()
-	return listCodexSessions(workDir, codexHome)
+	return listCodexSessions(workDir, codexHome, 0)
+}
+
+func (a *Agent) ListAllSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
+	a.mu.RLock()
+	codexHome := a.codexHome
+	a.mu.RUnlock()
+
+	return listCodexSessions("", codexHome, 100)
 }
 
 func (a *Agent) GetSessionHistory(_ context.Context, sessionID string, limit int) ([]core.HistoryEntry, error) {
