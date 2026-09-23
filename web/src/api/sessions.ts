@@ -27,6 +27,59 @@ export interface SessionDetail extends Session {
   history: { role: string; content: string; timestamp: string }[];
 }
 
+export interface AgentSessionView {
+  id: string;
+  summary?: string;
+  message_count: number;
+  modified_at?: string;
+  time_source: 'record' | 'unknown';
+  project_path?: string;
+  agent_type: string;
+  bound: boolean;
+  bound_chat_id?: string;
+  cc_session_id?: string;
+}
+
+export interface AgentSessionListParams {
+  since?: string;
+  until?: string;
+  limit?: number;
+  scope?: 'project' | 'all';
+}
+
+export interface AgentSessionListResponse {
+  sessions: AgentSessionView[];
+  count: number;
+  scope: 'project' | 'all';
+  all_sessions_supported: boolean;
+  filtered_unknown_time: number;
+}
+
+export interface AgentSessionHistoryEntry {
+  role: string;
+  content: string;
+  timestamp: string;
+}
+
+export interface AgentSessionHistoryResponse {
+  id: string;
+  agent_type: string;
+  history: AgentSessionHistoryEntry[];
+  count: number;
+}
+
+export interface CreateAgentSessionGroupBody {
+  owner_user_id: string;
+  name?: string;
+}
+
+export interface CreateAgentSessionGroupResponse {
+  created: boolean;
+  chat_id: string;
+  owner_user_id: string;
+  binding_namespace: string;
+}
+
 export const listSessions = (project: string) =>
   api.get<{ sessions: Session[]; active_keys: Record<string, string> }>(`/projects/${project}/sessions`);
 export const getSession = (project: string, id: string, historyLimit?: number) =>
@@ -38,3 +91,21 @@ export const switchSession = (project: string, body: { session_key: string; sess
   api.post(`/projects/${project}/sessions/switch`, body);
 export const sendMessage = (project: string, body: { session_key: string; message: string }) =>
   api.post(`/projects/${project}/send`, body);
+
+export const listAgentSessions = (project: string, params: AgentSessionListParams) => {
+  const query: Record<string, string> = {};
+  if (params.since) query.since = params.since;
+  if (params.until) query.until = params.until;
+  if (params.limit !== undefined) query.limit = String(params.limit);
+  if (params.scope) query.scope = params.scope;
+  return api.get<AgentSessionListResponse>(`/projects/${project}/agent-sessions`, query);
+};
+
+export const getAgentSessionHistory = (project: string, id: string, limit?: number) =>
+  api.get<AgentSessionHistoryResponse>(
+    `/projects/${project}/agent-sessions/${encodeURIComponent(id)}/history`,
+    limit !== undefined ? { limit: String(limit) } : undefined,
+  );
+
+export const createAgentSessionGroup = (project: string, id: string, body: CreateAgentSessionGroupBody) =>
+  api.post<CreateAgentSessionGroupResponse>(`/projects/${project}/agent-sessions/${encodeURIComponent(id)}/group`, body);

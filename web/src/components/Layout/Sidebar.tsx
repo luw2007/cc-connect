@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Plug,
   Puzzle,
+  History,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
@@ -20,6 +21,7 @@ const navItems = [
   { key: 'providers', path: '/providers', icon: Plug },
   { key: 'skills', path: '/skills', icon: Puzzle },
   { key: 'chat', path: '/chat', icon: MessageSquare },
+  { key: 'sessions', path: '/sessions', icon: History },
   { key: 'cron', path: '/cron', icon: Clock },
   { key: 'system', path: '/system', icon: Settings },
 ];

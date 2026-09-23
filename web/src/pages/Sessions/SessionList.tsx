@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { MessageSquare, Circle, Filter, User, Bot } from 'lucide-react';
-import { Badge, EmptyState } from '@/components/ui';
+import { MessageSquare, Circle, Filter, User, Bot, AlertCircle } from 'lucide-react';
+import { Badge, Button, EmptyState } from '@/components/ui';
 import { listProjects, type ProjectSummary } from '@/api/projects';
 import { listSessions, type Session } from '@/api/sessions';
 import { cn } from '@/lib/utils';
+import AgentSessionList from './AgentSessionList';
 
 interface FlatSession extends Session {
   _project: string;
@@ -29,9 +30,12 @@ export default function SessionList() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [view, setView] = useState<'cc-connect' | 'agent'>('cc-connect');
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    setLoadError('');
     try {
       const { projects: projs } = await listProjects();
       setProjects(projs || []);
@@ -46,6 +50,8 @@ export default function SessionList() {
         })
       );
       setAllData(results);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
     }
@@ -73,76 +79,108 @@ export default function SessionList() {
 
   return (
     <div className="space-y-4 animate-fade-in ">
-      {/* Filter bar */}
-      <div className="flex items-center gap-3">
-        <Filter size={16} className="text-gray-400" />
-        <select
-          value={selectedProject}
-          onChange={(e) => setSelectedProject(e.target.value)}
-          className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent/50"
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant={view === 'cc-connect' ? 'primary' : 'secondary'}
+          onClick={() => setView('cc-connect')}
         >
-          <option value="">{t('sessions.allProjects')}</option>
-          {projects.map((p) => (
-            <option key={p.name} value={p.name}>{p.name}</option>
-          ))}
-        </select>
-        <span className="text-xs text-gray-400">
-          {filtered.length} {t('nav.sessions').toLowerCase()}
-        </span>
+          cc-connect Sessions
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={view === 'agent' ? 'primary' : 'secondary'}
+          onClick={() => setView('agent')}
+        >
+          Agent Sessions
+        </Button>
       </div>
 
-      {filtered.length === 0 ? (
-        <EmptyState message={t('sessions.noSessions')} icon={MessageSquare} />
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
-          {filtered.map((s) => (
-            <Link key={`${s._project}-${s.id}`} to={`/sessions/${s._project}/${s.id}`}>
-              <div className={cn(
-                'group relative rounded-xl border p-4 transition-all duration-200 cursor-pointer h-full',
-                'bg-white/60 dark:bg-white/[0.03] backdrop-blur-sm',
-                'border-gray-200/80 dark:border-white/[0.06]',
-                'hover:border-accent/40 hover:shadow-md hover:shadow-accent/5 hover:-translate-y-0.5',
-              )}>
-                {/* Top: name + time */}
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <MessageSquare size={14} className={s.live ? 'text-accent shrink-0' : 'text-gray-400 shrink-0'} />
-                    <span className="text-sm font-medium text-gray-900 dark:text-white truncate">
-                      {s.name || s.user_name || s.id.slice(0, 8)}
-                    </span>
-                    {s.live && <Circle size={5} className="fill-emerald-500 text-emerald-500 shrink-0" />}
-                  </div>
-                  <span className="text-[10px] text-gray-400 shrink-0 mt-0.5">
-                    {timeAgo(s.updated_at || s.created_at, t)}
-                  </span>
-                </div>
-
-                {/* Last message preview */}
-                <div className="mb-2.5 min-h-[2.5rem]">
-                  {s.last_message ? (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 leading-relaxed">
-                      {s.last_message.role === 'user' ? (
-                        <User size={10} className="inline mr-1 -mt-0.5 opacity-60" />
-                      ) : (
-                        <Bot size={10} className="inline mr-1 -mt-0.5 opacity-60" />
-                      )}
-                      {s.last_message.content.replace(/\n/g, ' ').slice(0, 100)}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-gray-400 dark:text-gray-500 italic">{t('sessions.noMessages')}</p>
-                  )}
-                </div>
-
-                {/* Bottom: badges + count */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <Badge>{s._project}</Badge>
-                  {s.platform && <Badge variant="info">{s.platform}</Badge>}
-                  <span className="text-[10px] text-gray-400 ml-auto">{s.history_count} msgs</span>
-                </div>
-              </div>
-            </Link>
-          ))}
+      {loadError && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-900/20 dark:text-red-300">
+          <AlertCircle size={15} />
+          {loadError}
         </div>
+      )}
+
+      {view === 'agent' ? (
+        <AgentSessionList projects={projects} />
+      ) : (
+        <>
+          {/* Filter bar */}
+          <div className="flex items-center gap-3">
+            <Filter size={16} className="text-gray-400" />
+            <select
+              value={selectedProject}
+              onChange={(e) => setSelectedProject(e.target.value)}
+              className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent/50"
+            >
+              <option value="">{t('sessions.allProjects')}</option>
+              {projects.map((p) => (
+                <option key={p.name} value={p.name}>{p.name}</option>
+              ))}
+            </select>
+            <span className="text-xs text-gray-400">
+              {filtered.length} {t('nav.sessions').toLowerCase()}
+            </span>
+          </div>
+
+          {filtered.length === 0 ? (
+            <EmptyState message={t('sessions.noSessions')} icon={MessageSquare} />
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+              {filtered.map((s) => (
+                <Link key={`${s._project}-${s.id}`} to={`/sessions/${s._project}/${s.id}`}>
+                  <div className={cn(
+                    'group relative rounded-xl border p-4 transition-all duration-200 cursor-pointer h-full',
+                    'bg-white/60 dark:bg-white/[0.03] backdrop-blur-sm',
+                    'border-gray-200/80 dark:border-white/[0.06]',
+                    'hover:border-accent/40 hover:shadow-md hover:shadow-accent/5 hover:-translate-y-0.5',
+                  )}>
+                    {/* Top: name + time */}
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <MessageSquare size={14} className={s.live ? 'text-accent shrink-0' : 'text-gray-400 shrink-0'} />
+                        <span className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                          {s.name || s.user_name || s.id.slice(0, 8)}
+                        </span>
+                        {s.live && <Circle size={5} className="fill-emerald-500 text-emerald-500 shrink-0" />}
+                      </div>
+                      <span className="text-[10px] text-gray-400 shrink-0 mt-0.5">
+                        {timeAgo(s.updated_at || s.created_at, t)}
+                      </span>
+                    </div>
+
+                    {/* Last message preview */}
+                    <div className="mb-2.5 min-h-[2.5rem]">
+                      {s.last_message ? (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 leading-relaxed">
+                          {s.last_message.role === 'user' ? (
+                            <User size={10} className="inline mr-1 -mt-0.5 opacity-60" />
+                          ) : (
+                            <Bot size={10} className="inline mr-1 -mt-0.5 opacity-60" />
+                          )}
+                          {s.last_message.content.replace(/\n/g, ' ').slice(0, 100)}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-gray-400 dark:text-gray-500 italic">{t('sessions.noMessages')}</p>
+                      )}
+                    </div>
+
+                    {/* Bottom: badges + count */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <Badge>{s._project}</Badge>
+                      {s.platform && <Badge variant="info">{s.platform}</Badge>}
+                      <span className="text-[10px] text-gray-400 ml-auto">{s.history_count} msgs</span>
+                    </div>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
