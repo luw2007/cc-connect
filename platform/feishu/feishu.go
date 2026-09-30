@@ -842,6 +842,11 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 		chatID = userID
 	}
 	sessionKey := p.sessionKeyFromCardAction(chatID, userID, event.Event.Action.Value)
+	// Group creation needs the actual card operator: thread-isolated session keys
+	// contain "root" where a user ID would normally appear.
+	if userID != "" && (actionVal == "act:/session-group" || actionVal == "act:/dir-group" || strings.HasPrefix(actionVal, "act:/dir-group ")) {
+		actionVal += " owner=" + userID
+	}
 
 	// nav: / act: — synchronous card update
 	if strings.HasPrefix(actionVal, "nav:") || strings.HasPrefix(actionVal, "act:") {
@@ -7090,10 +7095,41 @@ func wrapTablesBeyondLimit(text string, matches []markdownTextMatch, keepCount i
 
 func sanitizeCardMarkdownTables(text string, remainingBudget int) (string, int) {
 	matches := findMarkdownTablesOutsideCodeBlocks(text)
-	if len(matches) <= remainingBudget {
-		return text, remainingBudget - len(matches)
+	// Feishu's narrow card viewport wraps table cells independently, making even
+	// valid Markdown tables difficult to read. Render rows vertically instead.
+	for i := len(matches) - 1; i >= 0; i-- {
+		match := matches[i]
+		lines := strings.Split(match.raw, "\n")
+		headers := splitFeishuTableCells(lines[0])
+		var rows []string
+		for _, line := range lines[2:] {
+			cells := splitFeishuTableCells(line)
+			var fields []string
+			for col, cell := range cells {
+				if col < len(headers) && cell != "" {
+					fields = append(fields, "- **"+headers[col]+"**: "+cell)
+				}
+			}
+			if len(fields) > 0 {
+				rows = append(rows, strings.Join(fields, "\n"))
+			}
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		text = text[:match.start] + strings.Join(rows, "\n\n") + text[match.end:]
 	}
-	return wrapTablesBeyondLimit(text, matches, remainingBudget), 0
+	return text, remainingBudget
+}
+
+func splitFeishuTableCells(line string) []string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(strings.TrimSuffix(line, "|"), "|")
+	parts := strings.Split(line, "|")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
 }
 
 func stripInvalidFeishuCardImages(text string) string {

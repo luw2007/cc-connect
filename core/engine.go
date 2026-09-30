@@ -14627,10 +14627,22 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		}
 
 	case "/session-group":
-		go e.executeSessionGroup(sessionKey)
+		ownerID := strings.TrimPrefix(args, "owner=")
+		if !strings.HasPrefix(args, "owner=") {
+			ownerID = extractUserID(sessionKey)
+		}
+		go e.executeSessionGroupWithOwner(sessionKey, ownerID)
 
 	case "/dir-group":
-		go e.executeDirGroup(sessionKey, args)
+		ownerID := extractUserID(sessionKey)
+		if idx := strings.LastIndex(args, " owner="); idx >= 0 {
+			ownerID = strings.TrimSpace(args[idx+len(" owner="):])
+			args = strings.TrimSpace(args[:idx])
+		} else if strings.HasPrefix(args, "owner=") {
+			ownerID = strings.TrimPrefix(args, "owner=")
+			args = ""
+		}
+		go e.executeDirGroupWithOwner(sessionKey, args, ownerID)
 
 	case "/groups":
 		if strings.HasPrefix(args, "dissolve ") {
@@ -18854,6 +18866,10 @@ func (e *Engine) renameGroupChatWithDir(sessionKey string, agent Agent, sessionN
 }
 
 func (e *Engine) executeSessionGroup(sessionKey string) {
+	e.executeSessionGroupWithOwner(sessionKey, extractUserID(sessionKey))
+}
+
+func (e *Engine) executeSessionGroupWithOwner(sessionKey, userID string) {
 	platformName := extractPlatformName(sessionKey)
 	var targetPlatform Platform
 	for _, p := range e.platforms {
@@ -18898,8 +18914,7 @@ func (e *Engine) executeSessionGroup(sessionKey string) {
 		}
 	}
 
-	groupName := e.nextGroupName(extractUserID(sessionKey), groupLabel)
-	userID := extractUserID(sessionKey)
+	groupName := e.nextGroupName(userID, groupLabel)
 	chatID, err := creator.CreateGroupChat(e.ctx, groupName, "", userID)
 	if err != nil {
 		slog.Error("session-group: create group chat failed", "error", err, "session", sessionKey)
@@ -18938,6 +18953,10 @@ func (e *Engine) nextGroupName(userID, label string) string {
 }
 
 func (e *Engine) executeDirGroup(sessionKey string, args string) {
+	e.executeDirGroupWithOwner(sessionKey, args, extractUserID(sessionKey))
+}
+
+func (e *Engine) executeDirGroupWithOwner(sessionKey string, args string, userID string) {
 	platformName := extractPlatformName(sessionKey)
 	var targetPlatform Platform
 	for _, p := range e.platforms {
@@ -18981,8 +19000,7 @@ func (e *Engine) executeDirGroup(sessionKey string, args string) {
 		dirName = "project"
 	}
 
-	groupName := e.nextGroupName(extractUserID(sessionKey), dirName)
-	userID := extractUserID(sessionKey)
+	groupName := e.nextGroupName(userID, dirName)
 	chatID, err := creator.CreateGroupChat(e.ctx, groupName, "", userID)
 	if err != nil {
 		slog.Error("dir-group: create group chat failed", "error", err, "session", sessionKey)
