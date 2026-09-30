@@ -209,45 +209,6 @@ func (m *WorkspaceBindingManager) MarkActivated(projectKey, channelKey string) {
 	}
 }
 
-// LookupBySessionID returns the channel key and binding already associated
-// with agentSessionID within projectKey (C4: dedup on external session
-// identity, not workspace path -- two workspaces on the same repo path are
-// distinct sessions and must not collide). The returned binding is a COPY
-// (B2): the manager's internal *WorkspaceBinding can be mutated by
-// MarkActivated or replaced wholesale by refreshLocked (an external file
-// change) while a caller holds a pointer read outside this lock, so callers
-// must never receive the live one.
-func (m *WorkspaceBindingManager) LookupBySessionID(projectKey, agentSessionID string) (channelKey string, binding *WorkspaceBinding, found bool) {
-	if agentSessionID == "" {
-		return "", nil, false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.refreshLocked()
-	for ck, b := range m.bindings[projectKey] {
-		if b.AgentSessionID == agentSessionID {
-			b2 := *b
-			return ck, &b2, true
-		}
-	}
-	return "", nil, false
-}
-
-// MarkActivated flags an existing binding as fully activated (switched +
-// announced), so a repeating sweep does not resend the announcement on
-// every tick after a successful bind. No-op if the binding is missing.
-func (m *WorkspaceBindingManager) MarkActivated(projectKey, channelKey string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.refreshLocked()
-	if proj := m.bindings[projectKey]; proj != nil {
-		if b := proj[channelKey]; b != nil {
-			b.Activated = true
-			m.saveLocked()
-		}
-	}
-}
-
 func (m *WorkspaceBindingManager) Unbind(projectKey, channelKey string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -3634,7 +3634,7 @@ func TestHandleMessage_AutoResetOnIdle_RotatesToNewSession(t *testing.T) {
 	for {
 		active := e.sessions.GetOrCreateActive(key)
 		sent := p.getSent()
-		if active.ID != old.ID && len(active.GetHistory(0)) >= 2 && len(sent) >= 2 {
+		if active.ID != old.ID && len(active.GetHistory(0)) >= 2 && len(sent) >= 1 {
 			break
 		}
 		select {
@@ -3671,9 +3671,6 @@ func TestHandleMessage_AutoResetOnIdle_RotatesToNewSession(t *testing.T) {
 	}
 
 	sent := p.getSent()
-	if !strings.Contains(sent[0], "Session auto-reset") {
-		t.Fatalf("first reply = %q, want auto-reset notice", sent[0])
-	}
 	if got := sent[len(sent)-1]; got != "fresh reply" {
 		t.Fatalf("final reply = %q, want fresh reply", got)
 	}
@@ -3775,7 +3772,7 @@ func TestHandleMessage_AutoResetOnIdle_FiresWhenHeartbeatBumpedUpdatedAt(t *test
 	for {
 		active := e.sessions.GetOrCreateActive(key)
 		sent := p.getSent()
-		if active.ID != old.ID && len(active.GetHistory(0)) >= 2 && len(sent) >= 2 {
+		if active.ID != old.ID && len(active.GetHistory(0)) >= 2 && len(sent) >= 1 {
 			break
 		}
 		select {
@@ -3791,8 +3788,8 @@ func TestHandleMessage_AutoResetOnIdle_FiresWhenHeartbeatBumpedUpdatedAt(t *test
 		t.Fatal("expected a new active session after idle auto-reset")
 	}
 	sent := p.getSent()
-	if !strings.Contains(sent[0], "Session auto-reset") {
-		t.Fatalf("first reply = %q, want auto-reset notice", sent[0])
+	if len(sent) != 1 || sent[0] != "fresh reply" {
+		t.Fatalf("replies = %v, want only fresh reply after silent reset", sent)
 	}
 }
 
