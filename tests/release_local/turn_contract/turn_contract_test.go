@@ -857,7 +857,17 @@ func TestRichCardModeKeepsToolStepsAndFinalMetadataInOneCard(t *testing.T) {
 	agent.session.emit(core.Event{Type: core.EventToolUse, ToolName: "Bash", ToolInput: "echo rich"})
 	agent.session.emit(core.Event{Type: core.EventToolResult, ToolName: "Bash", ToolResult: "rich output", ToolStatus: "completed"})
 	agent.session.releaseFirstResult(core.Event{Type: core.EventResult, Content: "rich final", InputTokens: 28000, Done: true})
-	platform.waitPreviewUpdates(t, 3)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, _, updates, _ := platform.snapshotPreviewLifecycle()
+		if len(updates) > 0 && strings.Contains(updates[len(updates)-1], "status=done") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for completed rich card; updates=%#v", updates)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	texts, starts, updates, deletes := platform.snapshotPreviewLifecycle()
 	if len(texts) != 0 || len(starts) != 1 || len(updates) == 0 || len(deletes) != 0 {

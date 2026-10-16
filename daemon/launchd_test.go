@@ -228,6 +228,59 @@ func TestLaunchdRestart_UnloadedServiceBootstrapsThenKickstartsWithoutBootout(t 
 	}
 }
 
+func TestRestartKeepsUserDomainWhenGUIDomainUnavailable(t *testing.T) {
+	orig := runLaunchctl
+	t.Cleanup(func() { runLaunchctl = orig })
+
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	t.Setenv("HOME", dir)
+	if origHome != "" {
+		t.Cleanup(func() { _ = os.Setenv("HOME", origHome) })
+	}
+	guiDomain := launchdGUIDomain()
+	userDomain := launchdUserDomain()
+	userTarget := launchdTarget(userDomain)
+
+	var calls []string
+	runLaunchctl = func(args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if len(args) < 2 {
+			return "", nil
+		}
+		switch args[0] {
+		case "print":
+			switch args[1] {
+			case guiDomain:
+				return "Bootstrap failed: 125: Domain does not support specified action", fmt.Errorf("exit status 125")
+			case userDomain:
+				return "subsystem", nil
+			case userTarget:
+				return "pid = 4321\nstate = running", nil
+			default:
+				return "", fmt.Errorf("unexpected print target %q", args[1])
+			}
+		case "kickstart":
+			if args[len(args)-1] != userTarget {
+				t.Fatalf("kickstart target = %q, want %q", args[len(args)-1], userTarget)
+			}
+			return "", nil
+		default:
+			t.Fatalf("unexpected launchctl call: %v", args)
+			return "", nil
+		}
+	}
+
+	mgr := &launchdManager{}
+	if err := mgr.Restart(); err != nil {
+		t.Fatalf("Restart() error = %v", err)
+	}
+
+	if !containsCall(calls, "kickstart -kp "+userTarget) {
+		t.Fatalf("expected kickstart to user target, calls = %#v", calls)
+	}
+}
+
 // collectXMLText walks the XML stream and returns every chardata text node.
 // Used by the plist-escape test to verify path values round-trip through
 // xml.Decoder regardless of how deeply they are nested.
@@ -494,5 +547,63 @@ func TestInstallLaunchd_TightensExistingPlistFrom0644(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("plist mode after reinstall = %o, want 0600", info.Mode().Perm())
+	}
+}
+
+// TestBuildPlist_IncludesHOME regresses the "Append system prompt file not
+// found" bug: launchd LaunchAgents do not always propagate HOME, so the
+// daemon (and Claude / Codex / etc. subprocesses it spawns) would call
+// os.UserHomeDir(), get an error, and config.Load would fall back to a
+// relative data_dir that agent subprocesses resolved against work_dir.
+func TestBuildPlist_IncludesHOME(t *testing.T) {
+	cfg := Config{
+		BinaryPath: "/bin/true",
+		WorkDir:    "/tmp/wd",
+		LogFile:    "/tmp/log",
+		LogMaxSize: 1024,
+		EnvPATH:    "/usr/bin",
+		HomeDir:    "/home/app",
+	}
+	out := buildPlist(cfg)
+	if !strings.Contains(out, "<key>HOME</key>\n\t\t<string>/home/app</string>") {
+		t.Fatalf("plist should include HOME=/home/app; got:\n%s", out)
+	}
+}
+
+// TestBuildPlist_OmitsHOMEWhenEmpty ensures we do not emit an empty
+// <string></string> for HOME when the caller could not determine one.
+func TestBuildPlist_OmitsHOMEWhenEmpty(t *testing.T) {
+	cfg := Config{
+		BinaryPath: "/bin/true",
+		WorkDir:    "/tmp/wd",
+		LogFile:    "/tmp/log",
+		LogMaxSize: 1024,
+		EnvPATH:    "/usr/bin",
+	}
+	out := buildPlist(cfg)
+	if strings.Contains(out, "<key>HOME</key>") {
+		t.Fatalf("plist should omit HOME when HomeDir empty; got:\n%s", out)
+	}
+}
+
+// TestBuildPlist_EnvExtraHOMEDoesNotOverrideTemplateHOME pins that the
+// template-owned HOME wins over any HOME leaking in through EnvExtra —
+// the same guarantee we make for PATH and CC_LOG_FILE.
+func TestBuildPlist_EnvExtraHOMEDoesNotOverrideTemplateHOME(t *testing.T) {
+	cfg := Config{
+		BinaryPath: "/bin/true",
+		WorkDir:    "/tmp/wd",
+		LogFile:    "/tmp/log",
+		LogMaxSize: 1024,
+		EnvPATH:    "/usr/bin",
+		HomeDir:    "/home/app",
+		EnvExtra:   map[string]string{"HOME": "/should-not-override"},
+	}
+	out := buildPlist(cfg)
+	if strings.Contains(out, "/should-not-override") {
+		t.Fatalf("EnvExtra HOME leaked past template ownership: %s", out)
+	}
+	if !strings.Contains(out, "<string>/home/app</string>") {
+		t.Fatalf("expected template HOME /home/app to survive; got:\n%s", out)
 	}
 }

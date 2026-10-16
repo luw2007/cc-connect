@@ -29,6 +29,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -233,6 +234,7 @@ type cujAgentSession struct {
 
 	// observed
 	sentPrompts []string
+	sentImages  [][]ImageAttachment
 	closeCount  int
 }
 
@@ -253,9 +255,10 @@ func newCUJAgentSession() *cujAgentSession {
 	}
 }
 
-func (s *cujAgentSession) Send(prompt string, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+func (s *cujAgentSession) Send(prompt string, _ string, images []ImageAttachment, _ []FileAttachment) error {
 	s.mu.Lock()
 	s.sentPrompts = append(s.sentPrompts, prompt)
+	s.sentImages = append(s.sentImages, cloneCUJImages(images))
 	reply := s.reply
 	delay := s.delayMs
 	override := s.nextEventOverride
@@ -395,6 +398,27 @@ func (s *cujPermissionAgentSession) lastPermCall() (requestID string, result Per
 		return "", PermissionResult{}
 	}
 	return s.permReqIDs[n-1], s.permResults[n-1]
+}
+
+// Copy attachment bytes as well as the slice so observations remain independent
+// of later caller mutations and can be read safely while the session is running.
+func cloneCUJImages(images []ImageAttachment) []ImageAttachment {
+	out := make([]ImageAttachment, len(images))
+	for i, image := range images {
+		out[i] = image
+		out[i].Data = append([]byte(nil), image.Data...)
+	}
+	return out
+}
+
+func (s *cujAgentSession) getSentImages() [][]ImageAttachment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]ImageAttachment, len(s.sentImages))
+	for i, images := range s.sentImages {
+		out[i] = cloneCUJImages(images)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -1306,36 +1330,60 @@ func TestCUJ_A2_MultiTurnAgentReceivesHistory(t *testing.T) {
 	}
 }
 
-// CUJ-A3 · User uploads image → engine routes it to the agent.
-// (No real vision LLM; we assert the image attachment reaches the agent.)
+// CUJ-A3 · User sends text with an image, an image alone, then text alone.
+// Each turn receives a reply, and only that turn's images reach the agent.
 func TestCUJ_A3_ImageReachesAgent(t *testing.T) {
-	plat := &stubPlatformEngine{n: "test"}
-	agent := &cujAgent{}
-	dir := t.TempDir()
-	e := NewEngine("test", agent, []Platform{plat}, dir+"/sessions.json", LangEnglish)
-
-	msg := &Message{
-		SessionKey: "test:img", Platform: "test", MessageID: "img1",
-		UserID: "img", UserName: "img",
-		Content:  "what is in this image",
-		Images:   []ImageAttachment{{MimeType: "image/png", Data: []byte("\x89PNG fake"), FileName: "chart.png"}},
-		ReplyCtx: "ctx",
+	env := newCUJEnv(t)
+	t.Cleanup(func() { _ = env.engine.Stop() })
+	turns := []struct {
+		content string
+		images  []ImageAttachment
+	}{
+		{
+			content: "what is in this image",
+			images:  []ImageAttachment{{MimeType: "image/png", Data: []byte("\x89PNG chart"), FileName: "chart.png"}},
+		},
+		{
+			images: []ImageAttachment{{MimeType: "image/jpeg", Data: []byte("\xff\xd8 screenshot"), FileName: "screenshot.jpg"}},
+		},
+		{content: "thanks, no new image this time"},
 	}
-	e.ReceiveMessage(plat, msg)
+	for i, turn := range turns {
+		env.engine.ReceiveMessage(env.plat, &Message{
+			SessionKey: "test:img", Platform: "test", MessageID: fmt.Sprintf("img%d", i+1),
+			UserID: "img", UserName: "img", Content: turn.content,
+			Images: turn.images, ReplyCtx: "ctx",
+		})
+		env.waitFor(fmt.Sprintf("reply to image journey turn %d", i+1), 2*time.Second, func() bool {
+			count := 0
+			for _, reply := range env.plat.getSent() {
+				if reply == "ok" {
+					count++
+				}
+			}
+			return count >= i+1
+		})
 
-	deadline := time.After(2 * time.Second)
-	for {
-		agent.mu.Lock()
-		n := len(agent.sessions)
-		agent.mu.Unlock()
-		if n > 0 {
-			break
+		env.agent.mu.Lock()
+		if len(env.agent.sessions) != 1 {
+			n := len(env.agent.sessions)
+			env.agent.mu.Unlock()
+			t.Fatalf("turn %d: agent sessions = %d, want one continued session", i+1, n)
 		}
-		select {
-		case <-deadline:
-			t.Fatal("agent never received the message with image")
-		default:
-			time.Sleep(10 * time.Millisecond)
+		sess := env.agent.sessions[0]
+		env.agent.mu.Unlock()
+		sent := sess.getSentImages()
+		if len(sent) != i+1 {
+			t.Fatalf("turn %d: agent received %d sends, want %d", i+1, len(sent), i+1)
+		}
+		got := sent[i]
+		if len(got) != len(turn.images) {
+			t.Fatalf("turn %d: agent received %d images, want %d", i+1, len(got), len(turn.images))
+		}
+		for j, want := range turn.images {
+			if got[j].MimeType != want.MimeType || got[j].FileName != want.FileName || !bytes.Equal(got[j].Data, want.Data) {
+				t.Fatalf("turn %d image %d: got %#v, want %#v", i+1, j+1, got[j], want)
+			}
 		}
 	}
 }
@@ -2375,6 +2423,47 @@ func TestCUJ_I3_DisplayModesLinkedToIntegration(t *testing.T) {
 // for the next message.
 func TestCUJ_I4_StreamingToggleLinkedToIntegration(t *testing.T) {
 	t.Log("CUJ-I4: covered by release-gate TestCC_STREAM_01_off + TestCC_STREAM_02_on + core/streaming_test.go (14 unit tests)")
+}
+
+type referenceRenderCUJAgent struct{ *cujAgent }
+
+func (a *referenceRenderCUJAgent) Name() string { return "codex" }
+
+// CUJ-I5: across three replies, local files remain distinct, report values
+// remain readable, and the user can copy commands and web links unchanged.
+func TestCUJ_I5_LocalReferencesPreserveReplyContent(t *testing.T) {
+	platform := &stubPlatformEngine{n: "feishu"}
+	agent := &referenceRenderCUJAgent{cujAgent: &cujAgent{}}
+	engine := NewEngine("references", agent, []Platform{platform}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = engine.Stop() })
+	engine.SetReferenceConfig(ReferenceRenderCfg{
+		NormalizeAgents: []string{"codex"}, RenderPlatforms: []string{"feishu"},
+		DisplayPath: "basename", MarkerStyle: "emoji", EnclosureStyle: "code",
+	})
+	env := &cujEnv{t: t, engine: engine, plat: platform, agent: agent.cujAgent}
+	replies := []struct{ input, want string }{
+		{"`a.go` b.go c.go", "📄 `a.go` 📄 `b.go` 📄 `c.go`"},
+		{"参考 `report.md`: 23.34 9/28 170,851.78", "参考 📄 `report.md`: 23.34 9/28 170,851.78"},
+		{"Run `/new investigate` then https://example.com/one https://example.com/two", "Run `/new investigate` then https://example.com/one https://example.com/two"},
+	}
+	for i, reply := range replies {
+		if i == 0 {
+			agent.setNextSessionEvents([]Event{{Type: EventResult, Content: reply.input, Done: true}}, 0)
+		} else {
+			agent.mu.Lock()
+			session := agent.sessions[len(agent.sessions)-1]
+			agent.mu.Unlock()
+			session.mu.Lock()
+			session.reply = reply.input
+			session.mu.Unlock()
+		}
+		engine.ReceiveMessage(platform, &Message{
+			SessionKey: "feishu:reader", Platform: "feishu", UserID: "reader", ReplyCtx: "reader",
+			MessageID: fmt.Sprintf("reference-%d", i), Content: fmt.Sprintf("question %d", i),
+		})
+		env.waitFor("reference reply", 2*time.Second, func() bool { return env.sentContains(reply.want) })
+		env.waitFor("turn finished", 2*time.Second, func() bool { return !engine.sessions.GetOrCreateActive("feishu:reader").Busy() })
+	}
 }
 
 // ===========================================================================

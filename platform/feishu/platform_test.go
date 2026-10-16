@@ -1345,8 +1345,10 @@ func TestBuildRichCard_SanitizesMarkdownForCardLimits(t *testing.T) {
 	if !strings.Contains(content, "#### Big Result") {
 		t.Fatalf("card markdown should render h1 as h4, got %q", content)
 	}
-	if !strings.Contains(content, "```\n| D |\n|---|\n| 4 |\n```") {
-		t.Fatalf("fourth table should be downgraded to a code block, got %q", content)
+	for _, want := range []string{"- **A**: 1", "- **B**: 2", "- **C**: 3", "- **D**: 4"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("card markdown should preserve table fields as lists; missing %q in %q", want, content)
+		}
 	}
 	if !strings.Contains(content, "```\n| code |\n|---|\n| example |\n```") {
 		t.Fatalf("existing code block tables should stay intact, got %q", content)
@@ -1497,7 +1499,7 @@ func containsMarkdownLine(content string, want string) bool {
 	return false
 }
 
-func TestBuildCardJSONWithStatusFooter_SharesCardTableBudget(t *testing.T) {
+func TestBuildCardJSONWithStatusFooter_PreservesBodyAndFooterTableFields(t *testing.T) {
 	body := strings.Join([]string{
 		"| A |",
 		"|---|",
@@ -1518,11 +1520,10 @@ func TestBuildCardJSONWithStatusFooter_SharesCardTableBudget(t *testing.T) {
 	}, "\n")
 
 	content := strings.Join(collectCardMarkdownContents(t, buildCardJSONWithStatusFooter(body, footer)), "\n")
-	if !strings.Contains(content, "| C |\n|---|\n| 3 |") {
-		t.Fatalf("third table should remain renderable, got %q", content)
-	}
-	if !strings.Contains(content, "```\n| D |\n|---|\n| 4 |\n```") {
-		t.Fatalf("fourth table across card elements should be downgraded, got %q", content)
+	for _, want := range []string{"- **A**: 1", "- **B**: 2", "- **C**: 3", "- **D**: 4"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("card body and footer should preserve table fields as lists; missing %q in %q", want, content)
+		}
 	}
 }
 

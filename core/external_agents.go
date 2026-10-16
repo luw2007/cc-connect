@@ -506,7 +506,7 @@ func (e *Engine) externalGroupBinding(msg *Message) (backend, targetID string, o
 	if bindings == nil {
 		return "", "", false
 	}
-	channelKey := effectiveWorkspaceChannelKey(msg)
+	channelKey := e.effectiveWorkspaceChannelKey(msg)
 	if channelKey == "" {
 		return "", "", false
 	}
