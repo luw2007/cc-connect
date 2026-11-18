@@ -75,6 +75,8 @@ func TestNew_DefaultValues(t *testing.T) {
 }
 
 func TestNew_CustomOptions(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
+
 	ag, err := New(map[string]any{
 		"cmd":      "echo",
 		"work_dir": "/tmp",
