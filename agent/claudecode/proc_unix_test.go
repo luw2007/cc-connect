@@ -4,6 +4,8 @@ package claudecode
 
 import (
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -84,19 +86,32 @@ func TestForceKillCmd_KillsGrandchild(t *testing.T) {
 		_ = cmd.Wait()
 		t.Fatal("did not receive grandchild PID")
 	}
+	grandchildPID, err := strconv.Atoi(strings.TrimSpace(grandchildPidStr))
+	if err != nil {
+		_ = forceKillCmd(cmd)
+		_ = cmd.Wait()
+		t.Fatalf("parse grandchild PID %q: %v", grandchildPidStr, err)
+	}
 
 	if err := forceKillCmd(cmd); err != nil {
 		t.Fatalf("forceKillCmd: %v", err)
 	}
 	_ = cmd.Wait()
 
-	// Verify the grandchild is gone by checking that signaling it with 0
-	// (no-op, just checks existence) returns ESRCH within a short window.
-	// We can't easily parse the PID without strconv import bloat in tests,
-	// so we rely on `pgrep` semantics: re-kill the group should be a no-op.
-	if err := forceKillCmd(cmd); err != nil {
-		t.Errorf("second forceKillCmd should be no-op, got %v", err)
+	// A process-group ID can be recycled after the shell exits, so signaling
+	// the old group again is not a reliable descendant check on Darwin.
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		err := syscall.Kill(grandchildPID, 0)
+		if err == syscall.ESRCH {
+			return
+		}
+		if err != nil {
+			t.Fatalf("check grandchild %d: %v", grandchildPID, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Errorf("grandchild %d still exists after forceKillCmd", grandchildPID)
 }
 
 func TestSignalProcessGroup_NoProcess(t *testing.T) {

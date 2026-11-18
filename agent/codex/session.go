@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -168,6 +169,9 @@ func (cs *codexSession) Send(prompt string, messageID string, images []core.Imag
 	cmd := exec.CommandContext(cs.ctx, bin, args...)
 	cmd.Dir = cs.workDir
 	prepareCmdForKill(cmd)
+	cmd.Cancel = func() error {
+		return signalProcessGroup(cmd, syscall.SIGTERM)
+	}
 	if len(cs.extraEnv) > 0 {
 		cmd.Env = core.MergeEnv(os.Environ(), cs.extraEnv)
 	}

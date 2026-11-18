@@ -24,6 +24,10 @@ func prepareCmdForKill(cmd *exec.Cmd) {
 	cmd.SysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
 }
 
+func signalProcessGroup(cmd *exec.Cmd, _ syscall.Signal) error {
+	return forceKillCmd(cmd)
+}
+
 func forceKillCmd(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil

@@ -19,12 +19,16 @@ func prepareCmdForKill(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
-func forceKillCmd(cmd *exec.Cmd) error {
+func signalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+	if err := syscall.Kill(-cmd.Process.Pid, sig); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
 	return nil
+}
+
+func forceKillCmd(cmd *exec.Cmd) error {
+	return signalProcessGroup(cmd, syscall.SIGKILL)
 }
