@@ -378,7 +378,7 @@ func (cs *codexSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf 
 	defer func() {
 		defer cs.endTurn()
 		defer cs.removeCmd(cmd)
-		if err := cmd.Wait(); err != nil {
+		if err := cmd.Wait(); err != nil && cs.ctx.Err() == nil {
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
 			if stderrMsg != "" {
 				slog.Error("codexSession: process failed", "error", err, "stderr", stderrMsg)
