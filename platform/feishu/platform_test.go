@@ -132,28 +132,28 @@ func TestDetectFeishuFileMessageType(t *testing.T) {
 			name:     "mp4 video",
 			mimeType: "video/mp4",
 			fileName: "demo.mp4",
-			fileType: larkim.FileTypeMp4,
+			fileType: larkim.CreateFileFileTypeMp4,
 			msgType:  larkim.MsgTypeMedia,
 		},
 		{
 			name:     "opus audio",
 			mimeType: "audio/ogg",
 			fileName: "voice.ogg",
-			fileType: larkim.FileTypeOpus,
+			fileType: larkim.CreateFileFileTypeOpus,
 			msgType:  larkim.MsgTypeAudio,
 		},
 		{
 			name:     "pdf file",
 			mimeType: "application/pdf",
 			fileName: "report.pdf",
-			fileType: larkim.FileTypePdf,
+			fileType: larkim.CreateFileFileTypePdf,
 			msgType:  larkim.MsgTypeFile,
 		},
 		{
 			name:     "unknown file",
 			mimeType: "application/octet-stream",
 			fileName: "payload.bin",
-			fileType: larkim.FileTypeStream,
+			fileType: larkim.CreateFileFileTypeStream,
 			msgType:  larkim.MsgTypeFile,
 		},
 	}
@@ -263,7 +263,7 @@ func TestInteractivePlatform_OnMessagePassesCardSenderToHandler(t *testing.T) {
 }
 
 func TestInteractivePlatform_CardActionPassesCardSenderToHandler(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -487,7 +487,7 @@ func TestInteractivePlatform_CardActionFormCancelUsesActionNameFallback(t *testi
 }
 
 func TestInteractivePlatform_CardActionUsesCallbackSessionKey(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "thread_isolation": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "domain": stubOpenAPIDomain(t), "thread_isolation": true})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -1345,10 +1345,8 @@ func TestBuildRichCard_SanitizesMarkdownForCardLimits(t *testing.T) {
 	if !strings.Contains(content, "#### Big Result") {
 		t.Fatalf("card markdown should render h1 as h4, got %q", content)
 	}
-	for _, want := range []string{"- **A**: 1", "- **B**: 2", "- **C**: 3", "- **D**: 4"} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("card markdown should preserve table fields as lists; missing %q in %q", want, content)
-		}
+	if !strings.Contains(content, "```\n| D |\n|---|\n| 4 |\n```") {
+		t.Fatalf("fourth table should be downgraded to a code block, got %q", content)
 	}
 	if !strings.Contains(content, "```\n| code |\n|---|\n| example |\n```") {
 		t.Fatalf("existing code block tables should stay intact, got %q", content)
@@ -1499,7 +1497,7 @@ func containsMarkdownLine(content string, want string) bool {
 	return false
 }
 
-func TestBuildCardJSONWithStatusFooter_PreservesBodyAndFooterTableFields(t *testing.T) {
+func TestBuildCardJSONWithStatusFooter_SharesCardTableBudget(t *testing.T) {
 	body := strings.Join([]string{
 		"| A |",
 		"|---|",
@@ -1520,10 +1518,11 @@ func TestBuildCardJSONWithStatusFooter_PreservesBodyAndFooterTableFields(t *test
 	}, "\n")
 
 	content := strings.Join(collectCardMarkdownContents(t, buildCardJSONWithStatusFooter(body, footer)), "\n")
-	for _, want := range []string{"- **A**: 1", "- **B**: 2", "- **C**: 3", "- **D**: 4"} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("card body and footer should preserve table fields as lists; missing %q in %q", want, content)
-		}
+	if !strings.Contains(content, "| C |\n|---|\n| 3 |") {
+		t.Fatalf("third table should remain renderable, got %q", content)
+	}
+	if !strings.Contains(content, "```\n| D |\n|---|\n| 4 |\n```") {
+		t.Fatalf("fourth table across card elements should be downgraded, got %q", content)
 	}
 }
 
@@ -1692,6 +1691,76 @@ func TestFormatProgressToolInput_OtherTools(t *testing.T) {
 	}
 }
 
+func TestBuildToolDisplay_ShowsKeyParameters(t *testing.T) {
+	tests := []struct {
+		name     string
+		tool     string
+		input    string
+		contains []string
+	}{
+		{
+			name:  "read includes path range",
+			tool:  "read",
+			input: `{"filePath":"/tmp/a.go","offset":1,"limit":200}`,
+			contains: []string{
+				"filePath: /tmp/a.go",
+				"offset: 1",
+				"limit: 200",
+			},
+		},
+		{
+			name:  "grep includes scope",
+			tool:  "grep",
+			input: `{"pattern":"foo","include":"*.go","path":"platform/feishu"}`,
+			contains: []string{
+				"pattern: foo",
+				"include: *.go",
+				"path: platform/feishu",
+			},
+		},
+		{
+			name:  "command includes execution context",
+			tool:  "exec",
+			input: `{"cmd":"go test ./...","cwd":"/tmp/project","timeout":120000}`,
+			contains: []string{
+				"cmd: go test ./...",
+				"cwd: /tmp/project",
+				"timeout: 120000",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildToolDisplay(tt.tool, tt.input)
+			for _, want := range tt.contains {
+				if !strings.Contains(got.Detail, want) {
+					t.Errorf("detail %q does not contain %q", got.Detail, want)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildToolDisplay_RedactsKeyParameters(t *testing.T) {
+	got := buildToolDisplay("read", `{"filePath":"/tmp/a?token=secret","offset":1}`)
+	if strings.Contains(got.Detail, "token=secret") {
+		t.Fatalf("sensitive query value leaked: %q", got.Detail)
+	}
+	if !strings.Contains(got.Detail, "filePath:") || !strings.Contains(got.Detail, "offset: 1") {
+		t.Fatalf("key parameters were not retained: %q", got.Detail)
+	}
+}
+
+func TestBuildToolDisplay_ShowsPatchText(t *testing.T) {
+	got := buildToolDisplay("apply_patch", `{"filePath":"/tmp/a.go","patchText":"@@\n-old\n+new"}`)
+	for _, want := range []string{"filePath: /tmp/a.go", "patchText: @@\n-old\n+new"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail %q does not contain %q", got.Detail, want)
+		}
+	}
+}
+
 func TestAllowChat_FiltersGroupMessages(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1721,6 +1790,12 @@ func TestAllowChat_FiltersGroupMessages(t *testing.T) {
 				t.Fatalf("newPlatform() error = %v", err)
 			}
 			ip := p.(*interactivePlatform)
+			// Seed the name caches so onMessage never calls the real Feishu
+			// API. Without this each case waits on a chat/user lookup that
+			// fails against the live endpoint, which takes 1.4-2s from
+			// GitHub's runners and raced the 2s delivery wait below.
+			ip.chatNameCache.Store(tt.chatID, "Test group")
+			ip.userNameCache.Store("ou_test", "Tester")
 
 			messageID := "om_test_" + tt.name
 			openID := "ou_test"
@@ -2216,7 +2291,7 @@ func TestOnMessage_GracePeriodMessageIsProcessed(t *testing.T) {
 }
 
 func TestCmdAction_WithoutAfterClick_DispatchesAndReturnsNil(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2253,7 +2328,7 @@ func TestCmdAction_WithoutAfterClick_DispatchesAndReturnsNil(t *testing.T) {
 }
 
 func TestCmdAction_WithAfterClick_DispatchesAndReturnsCard(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2429,7 +2504,7 @@ func TestStreamingCardOptionsBounds(t *testing.T) {
 }
 
 func TestCmdAction_WithAfterClick_SessionKeyRoutes(t *testing.T) {
-	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true, "domain": stubOpenAPIDomain(t)})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

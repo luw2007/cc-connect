@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -38,7 +39,7 @@ func TestProcessInteractiveEvents_AnnouncesModelSwitch(t *testing.T) {
 	agentSession.events <- Event{Type: EventText, Content: "answer from the fallback model"}
 	agentSession.events <- Event{Type: EventResult, Content: "answer from the fallback model", Done: true}
 
-	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-model-switch", time.Now(), nil, nil, state.replyCtx, 0)
+	e.processInteractiveEvents(context.Background(), state, session, e.sessions, sessionKey, "m-model-switch", time.Now(), nil, nil, state.replyCtx, 0)
 
 	sent := p.getSent()
 	want := []string{
